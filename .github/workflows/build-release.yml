@@ -24,7 +24,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install customtkinter keyboard pyinstaller pillow pystray
+          pip install customtkinter pyinstaller pillow pystray
 
       - name: Generate icon
         run: python generate_icon.py
@@ -48,18 +48,24 @@ jobs:
             ## Modern DNS Changer ${{ github.ref_name }}
             
             ### Features
-            - 🌐 One-click DNS switching for WiFi adapter
-            - 📋 Custom DNS presets (preferred + secondary)
-            - ⌨️ Global hotkey toggle between two presets
-            - 📱 System tray icon with minimize-to-tray
-            - 🎨 Dark mode & Light mode
-            - 🌐 English & Persian (فارسی) language support
-            - 🪟 Windows 11 native styling (Mica, rounded corners)
-            - ⚡ Auto-admin elevation on launch
+            - One-click DNS switching for WiFi adapter (silent netsh)
+            - Custom DNS presets (preferred + secondary), saved to JSON
+            - Hotkey toggle between two presets (active when app is focused)
+            - Settings panel: hotkey config, A/B preset selection, theme, language, tray
+            - System tray icon with minimize-to-tray
+            - Dark & Light mode (auto-detects Windows theme on first launch)
+            - English & Persian language support with RTL
+            - Windows 11 native styling (Mica, dark title bar, rounded corners)
+            - Auto-admin elevation on launch
+            - Compact layout — fits without scrolling
             
             ### Download
-            Download `ModernDNSChanger.exe` below, no Python needed.
-            Double-click to run — it will prompt for admin access.
+            Download `ModernDNSChanger.exe` below — no Python needed.
+            Double-click to run (will prompt for admin access).
+            
+            ### Note
+            Windows Defender may flag the .exe as `Wacatac.B!ml` — this is a false positive
+            from PyInstaller-built apps. The source code is fully open in this repo.
           draft: false
           prerelease: false
         env:

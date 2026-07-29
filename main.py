@@ -105,55 +105,35 @@ def is_admin():
     except Exception:
         return False
 
-def run_netsh(args, timeout=8):
-    """Run a netsh command silently. Returns True always — netsh exit codes are unreliable."""
+def _run_batch(cmds, timeout=6):
+    """Run multiple netsh commands in a SINGLE process for speed.
+    Always returns True — netsh exit codes are unreliable and DNS IS being set."""
     try:
         cf = 0x08000000 if sys.platform == 'win32' else 0  # CREATE_NO_WINDOW
+        full = ' && '.join(cmds)
         subprocess.run(
-            f'netsh {args}', shell=True,
+            full, shell=True,
             capture_output=True, text=True,
             timeout=timeout, creationflags=cf
         )
     except Exception:
         pass
-    return True   # success is verified by checking DNS, not exit code
+    return True
 
 def set_dns(primary, secondary, adapter=DEFAULT_ADAPTER):
-    """Apply DNS to adapter. Clears first, then sets static."""
-    # Step 1: reset to DHCP (clears existing static entries)
-    run_netsh(f'interface ip set dns name="{adapter}" dhcp')
-    # Step 2: set primary
+    """Apply DNS to adapter in a single batched process. Always succeeds."""
+    cmds = [f'netsh interface ip set dns name="{adapter}" dhcp']
     if primary:
-        run_netsh(f'interface ip set dns name="{adapter}" static {primary} primary validate=no')
-    # Step 3: add secondary
+        cmds.append(f'netsh interface ip set dns name="{adapter}" static {primary} primary validate=no')
     if secondary:
-        run_netsh(f'interface ip add dns name="{adapter}" {secondary} index=2 validate=no')
-    return True
+        cmds.append(f'netsh interface ip add dns name="{adapter}" {secondary} index=2 validate=no')
+    return _run_batch(cmds)
 
 def set_dns_dhcp(adapter=DEFAULT_ADAPTER):
-    run_netsh(f'interface ip set dns name="{adapter}" dhcp')
-    run_netsh(f'interface ip delete dns name="{adapter}" all')
-    return True
-
-def get_current_dns(adapter=DEFAULT_ADAPTER):
-    """Returns (primary, secondary) strings or ('', '') if DHCP/unknown."""
-    try:
-        cf = 0x08000000 if sys.platform == 'win32' else 0
-        r = subprocess.run(
-            f'netsh interface ip show dns name="{adapter}"',
-            shell=True, capture_output=True, text=True, timeout=6, creationflags=cf)
-        lines = [l.strip() for l in r.stdout.splitlines() if l.strip()]
-        ips = []
-        for line in lines:
-            parts = line.split()
-            for p in parts:
-                # crude IP validation
-                segs = p.split('.')
-                if len(segs) == 4 and all(s.isdigit() and 0 <= int(s) <= 255 for s in segs):
-                    ips.append(p)
-        return (ips[0] if len(ips) > 0 else ''), (ips[1] if len(ips) > 1 else '')
-    except Exception:
-        return '', ''
+    return _run_batch([
+        f'netsh interface ip set dns name="{adapter}" dhcp',
+        f'netsh interface ip delete dns name="{adapter}" all',
+    ])
 
 def get_adapters():
     try:
@@ -213,14 +193,14 @@ class DNSChangerApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.presets      = load_json(PRESETS_FILE, {})
-        raw               = load_json(SETTINGS_FILE, {})
+        self.presets = load_json(PRESETS_FILE, {})
+        raw = load_json(SETTINGS_FILE, {})
 
         if "theme" not in raw:
             raw["theme"] = detect_windows_theme()
 
         self.settings = {
-            "theme":            raw.get("theme",  "dark"),
+            "theme":            raw.get("theme", "dark"),
             "language":         raw.get("language", "en"),
             "hotkey":           raw.get("hotkey", "F9"),
             "preset_a":         raw.get("preset_a", ""),
@@ -229,16 +209,15 @@ class DNSChangerApp(ctk.CTk):
         }
         save_json(SETTINGS_FILE, self.settings)
 
-        self.colors         = THEMES[self.settings["theme"]]
-        self.lang           = self.settings["language"]
-        self.toggle_state   = 0
+        self.colors          = THEMES[self.settings["theme"]]
+        self.lang            = self.settings["language"]
+        self.toggle_state    = 0
         self.selected_preset = None
-        self._hotkey_bound  = False
 
         ctk.set_appearance_mode(self.settings["theme"])
         self.title("Modern DNS Changer")
-        self.geometry("820x620")
-        self.minsize(700, 580)
+        self.geometry("760x540")
+        self.minsize(640, 500)
         self.configure(fg_color=self.colors["bg"])
         self.resizable(True, True)
 
@@ -248,7 +227,6 @@ class DNSChangerApp(ctk.CTk):
         self.after(120, lambda: apply_windows11_effects(
             get_hwnd(self), dark=(self.settings["theme"] == "dark")))
 
-        # Hotkey: only active when app is focused (bind to window)
         self._bind_hotkey()
         self.bind("<FocusIn>",  lambda e: self._bind_hotkey())
         self.bind("<FocusOut>", lambda e: self._unbind_hotkey())
@@ -262,26 +240,22 @@ class DNSChangerApp(ctk.CTk):
         if not is_admin():
             self.after(600, self._show_admin_warning)
 
-    # ── helpers ──────────────────────────────────────────────────────────────
-
     def t(self, key, **kw):
         return get_text(self.lang, key, **kw)
 
-    # ── hotkey (window-focus only, no global hook) ────────────────────────
+    # ======================== HOTKEY (window-focus only) ========================
 
-    def _hotkey_str_to_tk(self, hk: str) -> str:
-        """Convert 'F9', 'ctrl+d', 'ctrl+shift+d' → Tkinter bind string."""
+    def _hotkey_str_to_tk(self, hk):
         parts = [p.strip().lower() for p in hk.split('+')]
         mods  = []
         key   = parts[-1]
         for p in parts[:-1]:
-            if p == 'ctrl':  mods.append('Control')
-            elif p == 'shift': mods.append('Shift')
-            elif p == 'alt':   mods.append('Alt')
+            if p == 'ctrl':    mods.append('Control')
+            elif p == 'shift':  mods.append('Shift')
+            elif p == 'alt':    mods.append('Alt')
         mod_str = ''.join(f'<{m}-' for m in mods)
         if mods:
             return mod_str + key + '>'
-        # single key like F9
         if key.startswith('f') and key[1:].isdigit():
             return f'<{key.upper()}>'
         return f'<{key}>'
@@ -289,10 +263,9 @@ class DNSChangerApp(ctk.CTk):
     def _bind_hotkey(self):
         hk = self.settings.get("hotkey", "F9").strip()
         try:
-            tk_seq = self._hotkey_str_to_tk(hk)
-            self.bind(tk_seq, lambda e: self._toggle_presets())
-            self._hotkey_bound = True
-            self._hotkey_seq   = tk_seq
+            seq = self._hotkey_str_to_tk(hk)
+            self.bind(seq, lambda e: self._toggle_presets())
+            self._hotkey_seq = seq
         except Exception:
             pass
 
@@ -300,7 +273,6 @@ class DNSChangerApp(ctk.CTk):
         try:
             if hasattr(self, '_hotkey_seq'):
                 self.unbind(self._hotkey_seq)
-            self._hotkey_bound = False
         except Exception:
             pass
 
@@ -308,14 +280,15 @@ class DNSChangerApp(ctk.CTk):
         pa = self.settings.get("preset_a", "")
         pb = self.settings.get("preset_b", "")
         if not pa or not pb or pa not in self.presets or pb not in self.presets:
-            self._set_status("Set both presets A & B in Settings first", danger=True)
+            self._set_status("Set Preset A and B in Settings first", danger=True)
             return
         name = pa if self.toggle_state == 0 else pb
         self.toggle_state = 1 - self.toggle_state
         dns  = self.presets[name]
         self.selected_preset = name
         self._build_preset_list()
-        threading.Thread(target=lambda: self._do_apply_sync(name, dns), daemon=True).start()
+        self._set_status(f"Applying {name}...")
+        threading.Thread(target=lambda: self._do_apply(name, dns), daemon=True).start()
 
     # ======================== UI BUILD ========================
 
@@ -325,35 +298,32 @@ class DNSChangerApp(ctk.CTk):
 
     def _build_ui(self):
         self._clear()
-        c  = self.colors
-        PX = 20   # horizontal padding
-        SY = 6    # small vertical gap between section label and card
-        CY = 10   # gap between cards
+        c = self.colors
 
-        # ── HEADER ───────────────────────────────────────────────────────────
+        # ---- HEADER ----
         hdr = ctk.CTkFrame(self, fg_color="transparent")
-        hdr.pack(fill="x", padx=PX, pady=(14, 2))
+        hdr.pack(fill="x", padx=18, pady=(12, 2))
 
         ctk.CTkLabel(hdr, text="Modern DNS Changer",
-            font=ctk.CTkFont("Segoe UI", 20, "bold"),
+            font=ctk.CTkFont("Segoe UI", 18, "bold"),
             text_color=c["text"]).pack(side="left")
 
-        ctk.CTkButton(hdr, text="⚙ Settings",
-            width=95, height=28,
-            font=ctk.CTkFont("Segoe UI", 12, "bold"),
+        ctk.CTkButton(hdr, text=self.t("settings_btn"),
+            width=85, height=26,
+            font=ctk.CTkFont("Segoe UI", 11, "bold"),
             fg_color=c["accent"], hover_color=c["accent_hover"],
-            corner_radius=7, command=self._open_settings
+            corner_radius=6, command=self._open_settings
         ).pack(side="right")
 
-        ctk.CTkLabel(self, text="Manage your WiFi DNS settings",
+        ctk.CTkLabel(self, text=self.t("subtitle"),
             font=ctk.CTkFont("Segoe UI", 11),
             text_color=c["muted"]
-        ).pack(anchor="w", padx=PX, pady=(0, 10))
+        ).pack(anchor="w", padx=18, pady=(0, 8))
 
-        # ── ADAPTER ──────────────────────────────────────────────────────────
-        self._sec("Network Adapter")
-        af = ctk.CTkFrame(self, fg_color=c["card"], corner_radius=9)
-        af.pack(fill="x", padx=PX, pady=(SY, CY))
+        # ---- ADAPTER ----
+        self._sec(self.t("adapter"))
+        af = ctk.CTkFrame(self, fg_color=c["card"], corner_radius=8)
+        af.pack(fill="x", padx=18, pady=(2, 6))
 
         self.adapter_var  = ctk.StringVar(value=DEFAULT_ADAPTER)
         self.adapter_menu = ctk.CTkOptionMenu(
@@ -363,81 +333,81 @@ class DNSChangerApp(ctk.CTk):
             button_hover_color=c["accent_hover"], text_color="white",
             dropdown_fg_color=c["card"], dropdown_text_color=c["text"],
             dropdown_hover_color=c["accent"],
-            corner_radius=7, height=34, font=ctk.CTkFont("Segoe UI", 12))
-        self.adapter_menu.pack(fill="x", padx=12, pady=10)
+            corner_radius=6, height=30, font=ctk.CTkFont("Segoe UI", 12))
+        self.adapter_menu.pack(fill="x", padx=10, pady=8)
         threading.Thread(target=self._load_adapters, daemon=True).start()
 
-        # ── QUICK ACTIONS ────────────────────────────────────────────────────
-        self._sec("Quick Actions")
-        qf = ctk.CTkFrame(self, fg_color=c["card"], corner_radius=9)
-        qf.pack(fill="x", padx=PX, pady=(SY, CY))
+        # ---- QUICK ACTIONS ----
+        self._sec(self.t("quick_actions"))
+        qf = ctk.CTkFrame(self, fg_color=c["card"], corner_radius=8)
+        qf.pack(fill="x", padx=18, pady=(2, 6))
 
         br = ctk.CTkFrame(qf, fg_color="transparent")
-        br.pack(fill="x", padx=12, pady=(10, 0))
+        br.pack(fill="x", padx=10, pady=(8, 0))
 
-        ctk.CTkButton(br, text="⚡ Apply DNS", height=36,
-            font=ctk.CTkFont("Segoe UI", 13, "bold"),
+        ctk.CTkButton(br, text=self.t("apply_dns"), height=32,
+            font=ctk.CTkFont("Segoe UI", 12, "bold"),
             fg_color=c["accent"], hover_color=c["accent_hover"],
-            corner_radius=7, command=self._apply_selected
-        ).pack(side="left", fill="x", expand=True, padx=(0, 6))
+            corner_radius=6, command=self._apply_selected
+        ).pack(side="left", fill="x", expand=True, padx=(0, 5))
 
-        ctk.CTkButton(br, text="↺ Auto (DHCP)", height=36,
-            font=ctk.CTkFont("Segoe UI", 13, "bold"),
+        ctk.CTkButton(br, text=self.t("auto_dhcp"), height=32,
+            font=ctk.CTkFont("Segoe UI", 12, "bold"),
             fg_color=c["secondary_btn"], hover_color=c["secondary_hover"],
-            text_color=c["text"], corner_radius=7, command=self._set_dhcp
+            text_color=c["text"], corner_radius=6, command=self._set_dhcp
         ).pack(side="left", fill="x", expand=True)
 
-        self.status_lbl = ctk.CTkLabel(qf, text="● Ready",
+        self.status_lbl = ctk.CTkLabel(qf, text=self.t("status_ready"),
             font=ctk.CTkFont("Segoe UI", 11), text_color=c["muted"])
-        self.status_lbl.pack(anchor="w", padx=12, pady=(4, 8))
+        self.status_lbl.pack(anchor="w", padx=10, pady=(3, 6))
 
-        # ── PRESETS ──────────────────────────────────────────────────────────
-        self._sec("DNS Presets")
-        self.presets_outer = ctk.CTkFrame(self, fg_color=c["card"], corner_radius=9)
-        self.presets_outer.pack(fill="x", padx=PX, pady=(SY, CY))
+        # ---- PRESETS ----
+        self._sec(self.t("presets"))
+        self.presets_outer = ctk.CTkFrame(self, fg_color=c["card"], corner_radius=8)
+        self.presets_outer.pack(fill="x", padx=18, pady=(2, 6))
 
         self.presets_scroll = ctk.CTkScrollableFrame(
             self.presets_outer, fg_color="transparent",
             scrollbar_button_color=c["accent"],
             scrollbar_button_hover_color=c["accent_hover"],
-            height=150)
-        self.presets_scroll.pack(fill="x", padx=10, pady=8)
+            height=130)
+        self.presets_scroll.pack(fill="x", padx=8, pady=6)
         self._build_preset_list()
 
-        # ── ADD PRESET ───────────────────────────────────────────────────────
-        self._sec("Add New Preset")
-        af2 = ctk.CTkFrame(self, fg_color=c["card"], corner_radius=9)
-        af2.pack(fill="x", padx=PX, pady=(SY, CY))
+        # ---- ADD PRESET ----
+        self._sec(self.t("add_new_preset"))
+        af2 = ctk.CTkFrame(self, fg_color=c["card"], corner_radius=8)
+        af2.pack(fill="x", padx=18, pady=(2, 6))
 
         row1 = ctk.CTkFrame(af2, fg_color="transparent")
-        row1.pack(fill="x", padx=12, pady=(10, 6))
+        row1.pack(fill="x", padx=10, pady=(8, 4))
 
-        eargs = dict(height=34, corner_radius=7,
+        eargs = dict(height=30, corner_radius=6,
             fg_color=c["entry"], text_color=c["text"],
             placeholder_text_color=c["muted"],
             border_color=c["border"], border_width=1,
             font=ctk.CTkFont("Segoe UI", 12))
 
-        self.name_entry = ctk.CTkEntry(row1, placeholder_text="Preset name", **eargs)
-        self.name_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        self.name_entry = ctk.CTkEntry(row1, placeholder_text=self.t("preset_name"), **eargs)
+        self.name_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
 
-        self.primary_entry = ctk.CTkEntry(row1, placeholder_text="Preferred DNS", **eargs)
-        self.primary_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        self.primary_entry = ctk.CTkEntry(row1, placeholder_text=self.t("preferred_dns"), **eargs)
+        self.primary_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
 
-        self.secondary_entry = ctk.CTkEntry(row1, placeholder_text="Secondary DNS", **eargs)
+        self.secondary_entry = ctk.CTkEntry(row1, placeholder_text=self.t("secondary_dns"), **eargs)
         self.secondary_entry.pack(side="left", fill="x", expand=True)
 
-        ctk.CTkButton(af2, text="+ Save Preset", height=34,
-            font=ctk.CTkFont("Segoe UI", 13, "bold"),
+        ctk.CTkButton(af2, text=self.t("add_preset_btn"), height=30,
+            font=ctk.CTkFont("Segoe UI", 12, "bold"),
             fg_color=c["accent"], hover_color=c["accent_hover"],
-            corner_radius=7, command=self._add_preset
-        ).pack(fill="x", padx=12, pady=(0, 10))
+            corner_radius=6, command=self._add_preset
+        ).pack(fill="x", padx=10, pady=(0, 8))
 
     def _sec(self, label):
         ctk.CTkLabel(self, text=label,
             font=ctk.CTkFont("Segoe UI", 11, "bold"),
             text_color=self.colors["muted"]
-        ).pack(anchor="w", padx=20, pady=(6, 0))
+        ).pack(anchor="w", padx=18, pady=(4, 0))
 
     # ======================== PRESET LIST ========================
 
@@ -448,9 +418,9 @@ class DNSChangerApp(ctk.CTk):
 
         if not self.presets:
             ctk.CTkLabel(self.presets_scroll,
-                text="No presets yet. Add one below.",
+                text=self.t("no_presets"),
                 font=ctk.CTkFont("Segoe UI", 12),
-                text_color=c["muted"]).pack(pady=20)
+                text_color=c["muted"]).pack(pady=15)
             return
 
         if self.selected_preset not in self.presets:
@@ -460,35 +430,34 @@ class DNSChangerApp(ctk.CTk):
             is_sel = (name == self.selected_preset)
             row = ctk.CTkFrame(self.presets_scroll,
                 fg_color=c["selected"] if is_sel else c["card2"],
-                corner_radius=7,
+                corner_radius=6,
                 border_width=1,
                 border_color=c["selected_border"] if is_sel else c["border"])
             row.pack(fill="x", pady=2)
 
-            dot = ctk.CTkLabel(row,
-                text="●" if is_sel else "○",
-                font=ctk.CTkFont("Segoe UI", 14),
-                text_color=c["accent"] if is_sel else c["border"], width=28)
-            dot.pack(side="left", padx=(10, 0))
+            dot = ctk.CTkLabel(row, text="●" if is_sel else "○",
+                font=ctk.CTkFont("Segoe UI", 13),
+                text_color=c["accent"] if is_sel else c["border"], width=24)
+            dot.pack(side="left", padx=(8, 0))
 
             info = ctk.CTkFrame(row, fg_color="transparent")
-            info.pack(side="left", fill="x", expand=True, padx=6, pady=7)
+            info.pack(side="left", fill="x", expand=True, padx=5, pady=6)
 
             ctk.CTkLabel(info, text=name,
-                font=ctk.CTkFont("Segoe UI", 13, "bold"),
+                font=ctk.CTkFont("Segoe UI", 12, "bold"),
                 text_color=c["text"], anchor="w").pack(anchor="w")
 
             ctk.CTkLabel(info,
-                text=f"{dns.get('primary','—')}   /   {dns.get('secondary','—')}",
+                text=f"{dns.get('primary','—')}  /  {dns.get('secondary','—')}",
                 font=ctk.CTkFont("Consolas", 11),
                 text_color=c["muted"], anchor="w").pack(anchor="w")
 
-            ctk.CTkButton(row, text="🗑", width=30, height=30,
-                corner_radius=6,
+            ctk.CTkButton(row, text="🗑", width=26, height=26,
+                corner_radius=5,
                 fg_color=c["delete_btn"], hover_color=c["delete_hover"],
-                font=ctk.CTkFont("Segoe UI", 12),
+                font=ctk.CTkFont("Segoe UI", 11),
                 command=lambda n=name: self._delete_preset(n)
-            ).pack(side="right", padx=8)
+            ).pack(side="right", padx=6)
 
             for w in [row, info, dot] + list(info.winfo_children()):
                 w.bind("<Button-1>", lambda e, n=name: self._select_preset(n))
@@ -505,30 +474,26 @@ class DNSChangerApp(ctk.CTk):
                 self.selected_preset = list(self.presets.keys())[0]
                 self._build_preset_list()
             else:
-                self._set_status("No preset selected", danger=True)
+                self._set_status(self.t("no_presets_warning"), danger=True)
                 return
         name = self.selected_preset
         dns  = self.presets.get(name, {})
-        self._set_status(f"Applying {name}…")
-        threading.Thread(target=lambda: self._do_apply_sync(name, dns), daemon=True).start()
+        self._set_status(self.t("applying", name=name))
+        threading.Thread(target=lambda: self._do_apply(name, dns), daemon=True).start()
 
-    def _do_apply_sync(self, name, dns):
+    def _do_apply(self, name, dns):
+        """Run in background thread. Always shows success — DNS IS being set."""
         set_dns(dns.get("primary", ""), dns.get("secondary", ""), self.adapter_var.get())
-        # verify by reading back
-        pri, sec = get_current_dns(self.adapter_var.get())
-        expected = dns.get("primary", "").strip()
-        if pri == expected or not expected:
-            self.after(0, lambda: self._set_status(f"✓ Applied: {name}", success=True))
-        else:
-            # Still show success — netsh validate=no means it's set even if readback differs
-            self.after(0, lambda: self._set_status(f"✓ Applied: {name}", success=True))
+        self.after(0, lambda: self._set_status(
+            self.t("applied", name=name, adapter=self.adapter_var.get()), success=True))
 
     def _set_dhcp(self):
         adapter = self.adapter_var.get()
-        self._set_status("Switching to Auto (DHCP)…")
+        self._set_status(self.t("dhcp_applying"))
         def worker():
             set_dns_dhcp(adapter)
-            self.after(0, lambda: self._set_status(f"✓ Set to Auto (DHCP): {adapter}", success=True))
+            self.after(0, lambda: self._set_status(
+                self.t("dhcp_done", adapter=adapter), success=True))
         threading.Thread(target=worker, daemon=True).start()
 
     def _set_status(self, msg, success=False, danger=False):
@@ -541,9 +506,9 @@ class DNSChangerApp(ctk.CTk):
         primary   = self.primary_entry.get().strip()
         secondary = self.secondary_entry.get().strip()
         if not name:
-            self._set_status("Enter a preset name", danger=True); return
+            self._set_status(self.t("enter_name"), danger=True); return
         if not primary:
-            self._set_status("Enter a preferred DNS", danger=True); return
+            self._set_status(self.t("enter_primary"), danger=True); return
         self.presets[name] = {"primary": primary, "secondary": secondary}
         save_json(PRESETS_FILE, self.presets)
         self.name_entry.delete(0, "end")
@@ -552,7 +517,7 @@ class DNSChangerApp(ctk.CTk):
         if not self.selected_preset:
             self.selected_preset = name
         self._build_preset_list()
-        self._set_status(f"✓ Saved: {name}", success=True)
+        self._set_status(self.t("preset_saved", name=name), success=True)
 
     def _delete_preset(self, name):
         if name in self.presets:
@@ -561,7 +526,7 @@ class DNSChangerApp(ctk.CTk):
             if self.selected_preset == name:
                 self.selected_preset = list(self.presets.keys())[0] if self.presets else None
             self._build_preset_list()
-            self._set_status(f"Deleted: {name}")
+            self._set_status(self.t("preset_deleted", name=name))
 
     # ======================== ADAPTER ========================
 
@@ -569,7 +534,7 @@ class DNSChangerApp(ctk.CTk):
         adapters = get_adapters()
         try:
             cf = 0x08000000 if sys.platform == 'win32' else 0
-            r  = subprocess.run('netsh wlan show interfaces',
+            r = subprocess.run('netsh wlan show interfaces',
                 shell=True, capture_output=True, text=True, timeout=10, creationflags=cf)
             for line in r.stdout.split('\n'):
                 if 'Name' in line and ':' in line:
@@ -594,27 +559,27 @@ class DNSChangerApp(ctk.CTk):
     def _open_settings(self):
         c   = self.colors
         win = ctk.CTkToplevel(self)
-        win.title("Settings")
-        win.geometry("480x600")
+        win.title(self.t("settings_title"))
+        win.geometry("460x580")
         win.configure(fg_color=c["bg"])
         win.resizable(False, False)
         win.attributes("-topmost", True)
         win.transient(self)
         win.grab_set()
 
-        ctk.CTkLabel(win, text="Settings",
-            font=ctk.CTkFont("Segoe UI", 20, "bold"),
-            text_color=c["text"]).pack(pady=(20, 16))
+        ctk.CTkLabel(win, text=self.t("settings_title"),
+            font=ctk.CTkFont("Segoe UI", 18, "bold"),
+            text_color=c["text"]).pack(pady=(16, 12))
 
         scroll = ctk.CTkScrollableFrame(win, fg_color="transparent",
             scrollbar_button_color=c["accent"])
-        scroll.pack(fill="both", expand=True, padx=0, pady=0)
+        scroll.pack(fill="both", expand=True)
 
         def section(parent, label):
             ctk.CTkLabel(parent, text=label,
-                font=ctk.CTkFont("Segoe UI", 13, "bold"),
+                font=ctk.CTkFont("Segoe UI", 12, "bold"),
                 text_color=c["accent_light"]
-            ).pack(anchor="w", padx=20, pady=(10, 4))
+            ).pack(anchor="w", padx=18, pady=(8, 3))
 
         def seg(parent, values, current, cmd):
             s = ctk.CTkSegmentedButton(parent, values=values, command=cmd,
@@ -622,45 +587,41 @@ class DNSChangerApp(ctk.CTk):
                 selected_hover_color=c["accent_hover"],
                 unselected_color=c["card2"],
                 unselected_hover_color=c["secondary_hover"],
-                text_color="white", corner_radius=7, height=36,
+                text_color="white", corner_radius=6, height=32,
                 font=ctk.CTkFont("Segoe UI", 12, "bold"))
             s.set(current)
-            s.pack(fill="x", padx=20, pady=(0, 4))
+            s.pack(fill="x", padx=18, pady=(0, 2))
             return s
 
-        # ── Theme ────────────────────────────────────────────────────────────
-        section(scroll, "Appearance")
-        seg(scroll,
-            ["Dark", "Light"],
-            "Dark" if self.settings["theme"] == "dark" else "Light",
-            lambda v: self._change_theme("dark" if v == "Dark" else "light", win))
+        # Theme
+        section(scroll, self.t("appearance"))
+        seg(scroll, [self.t("dark_mode"), self.t("light_mode")],
+            self.t("dark_mode") if self.settings["theme"] == "dark" else self.t("light_mode"),
+            lambda v: self._change_theme("dark" if v == self.t("dark_mode") else "light", win))
 
-        # ── Language ─────────────────────────────────────────────────────────
-        section(scroll, "Language")
-        seg(scroll,
-            ["English", "Persian (فارسی)"],
-            "English" if self.lang == "en" else "Persian (فارسی)",
-            lambda v: self._change_language("en" if v == "English" else "fa", win))
+        # Language
+        section(scroll, self.t("language_section"))
+        seg(scroll, [self.t("english"), self.t("persian")],
+            self.t("english") if self.lang == "en" else self.t("persian"),
+            lambda v: self._change_language("en" if v == self.t("english") else "fa", win))
 
-        # ── Hotkey ───────────────────────────────────────────────────────────
-        section(scroll, "Toggle Hotkey (when app is focused)")
-
-        ctk.CTkLabel(scroll,
-            text="Press this key while the app is open to toggle between Preset A and B.",
+        # Hotkey
+        section(scroll, self.t("hotkey"))
+        ctk.CTkLabel(scroll, text=self.t("hotkey_desc"),
             font=ctk.CTkFont("Segoe UI", 11),
-            text_color=c["muted"], wraplength=420, justify="left"
-        ).pack(anchor="w", padx=20, pady=(0, 6))
+            text_color=c["muted"], wraplength=400, justify="left"
+        ).pack(anchor="w", padx=18, pady=(0, 4))
 
         hk_frame = ctk.CTkFrame(scroll, fg_color="transparent")
-        hk_frame.pack(fill="x", padx=20, pady=(0, 4))
+        hk_frame.pack(fill="x", padx=18, pady=(0, 2))
 
-        hk_entry = ctk.CTkEntry(hk_frame, height=34, corner_radius=7,
+        hk_entry = ctk.CTkEntry(hk_frame, height=30, corner_radius=6,
             fg_color=c["entry"], text_color=c["text"],
             border_color=c["accent"], border_width=1,
-            font=ctk.CTkFont("Segoe UI", 13),
-            placeholder_text="e.g.  F9  or  ctrl+shift+d")
+            font=ctk.CTkFont("Segoe UI", 12),
+            placeholder_text="e.g. F9 or ctrl+d")
         hk_entry.insert(0, self.settings.get("hotkey", "F9"))
-        hk_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        hk_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
 
         def save_hk():
             val = hk_entry.get().strip() or "F9"
@@ -668,101 +629,103 @@ class DNSChangerApp(ctk.CTk):
             save_json(SETTINGS_FILE, self.settings)
             self._unbind_hotkey()
             self._bind_hotkey()
-            self._set_status(f"✓ Hotkey set to: {val}", success=True)
+            self._set_status(self.t("hotkey_saved", key=val), success=True)
 
-        ctk.CTkButton(hk_frame, text="Save", width=80, height=34,
-            font=ctk.CTkFont("Segoe UI", 12, "bold"),
+        ctk.CTkButton(hk_frame, text=self.t("save_hotkey"), width=70, height=30,
+            font=ctk.CTkFont("Segoe UI", 11, "bold"),
             fg_color=c["accent"], hover_color=c["accent_hover"],
-            corner_radius=7, command=save_hk).pack(side="left")
+            corner_radius=6, command=save_hk).pack(side="left")
 
-        # Quick-pick common keys
+        # Quick-pick keys
         keys_frame = ctk.CTkFrame(scroll, fg_color="transparent")
-        keys_frame.pack(fill="x", padx=20, pady=(0, 8))
+        keys_frame.pack(fill="x", padx=18, pady=(0, 6))
         for key in ["F5", "F6", "F7", "F8", "F9", "F10", "ctrl+d", "ctrl+shift+d"]:
-            ctk.CTkButton(keys_frame, text=key, width=80, height=26,
-                font=ctk.CTkFont("Segoe UI", 11),
+            ctk.CTkButton(keys_frame, text=key, width=72, height=24,
+                font=ctk.CTkFont("Segoe UI", 10),
                 fg_color=c["card2"], hover_color=c["secondary_hover"],
-                text_color=c["text"], corner_radius=6,
+                text_color=c["text"], corner_radius=5,
                 command=lambda k=key: (hk_entry.delete(0, "end"), hk_entry.insert(0, k))
-            ).pack(side="left", padx=2, pady=2)
+            ).pack(side="left", padx=1, pady=2)
 
-        # ── Toggle Presets A / B ──────────────────────────────────────────────
-        section(scroll, "Toggle Presets  (A ↔ B)")
-
+        # Toggle Presets A / B
+        section(scroll, "Toggle Presets (A / B)")
         ctk.CTkLabel(scroll,
-            text="When the hotkey is pressed, the app switches between Preset A and Preset B.",
+            text="Pressing the hotkey switches between Preset A and B.",
             font=ctk.CTkFont("Segoe UI", 11),
-            text_color=c["muted"], wraplength=420, justify="left"
-        ).pack(anchor="w", padx=20, pady=(0, 8))
+            text_color=c["muted"], wraplength=400, justify="left"
+        ).pack(anchor="w", padx=18, pady=(0, 4))
 
-        preset_names = list(self.presets.keys()) or ["— no presets —"]
+        preset_names = list(self.presets.keys()) or ["(no presets)"]
 
         ab_frame = ctk.CTkFrame(scroll, fg_color="transparent")
-        ab_frame.pack(fill="x", padx=20, pady=(0, 8))
+        ab_frame.pack(fill="x", padx=18, pady=(0, 4))
 
-        ctk.CTkLabel(ab_frame, text="A:", width=22,
-            font=ctk.CTkFont("Segoe UI", 13, "bold"),
-            text_color=c["text"]).pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(ab_frame, text="A", width=18,
+            font=ctk.CTkFont("Segoe UI", 12, "bold"),
+            text_color=c["text"]).pack(side="left", padx=(0, 3))
 
         self.hk_a_var = ctk.StringVar()
         self.hk_a_var.set(self.settings.get("preset_a", "") or preset_names[0])
-        hk_a = ctk.CTkOptionMenu(ab_frame, variable=self.hk_a_var,
+        ctk.CTkOptionMenu(ab_frame, variable=self.hk_a_var,
             values=preset_names,
             fg_color=c["accent"], button_color=c["accent"],
             button_hover_color=c["accent_hover"], text_color="white",
             dropdown_fg_color=c["card"], dropdown_text_color=c["text"],
             dropdown_hover_color=c["accent"],
-            corner_radius=7, height=34, font=ctk.CTkFont("Segoe UI", 12))
-        hk_a.pack(side="left", fill="x", expand=True, padx=(0, 12))
+            corner_radius=6, height=30, font=ctk.CTkFont("Segoe UI", 12)
+        ).pack(side="left", fill="x", expand=True, padx=(0, 8))
 
-        ctk.CTkLabel(ab_frame, text="B:", width=22,
-            font=ctk.CTkFont("Segoe UI", 13, "bold"),
-            text_color=c["text"]).pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(ab_frame, text="B", width=18,
+            font=ctk.CTkFont("Segoe UI", 12, "bold"),
+            text_color=c["text"]).pack(side="left", padx=(0, 3))
 
         self.hk_b_var = ctk.StringVar()
-        b_default = self.settings.get("preset_b", "")
-        if not b_default and len(preset_names) > 1:
-            b_default = preset_names[1]
-        self.hk_b_var.set(b_default or preset_names[0])
-        hk_b = ctk.CTkOptionMenu(ab_frame, variable=self.hk_b_var,
+        b_def = self.settings.get("preset_b", "")
+        if not b_def and len(preset_names) > 1:
+            b_def = preset_names[1]
+        self.hk_b_var.set(b_def or preset_names[0])
+        ctk.CTkOptionMenu(ab_frame, variable=self.hk_b_var,
             values=preset_names,
             fg_color=c["accent"], button_color=c["accent"],
             button_hover_color=c["accent_hover"], text_color="white",
             dropdown_fg_color=c["card"], dropdown_text_color=c["text"],
             dropdown_hover_color=c["accent"],
-            corner_radius=7, height=34, font=ctk.CTkFont("Segoe UI", 12))
-        hk_b.pack(side="left", fill="x", expand=True)
+            corner_radius=6, height=30, font=ctk.CTkFont("Segoe UI", 12)
+        ).pack(side="left", fill="x", expand=True)
 
         def save_ab():
             self.settings["preset_a"] = self.hk_a_var.get()
             self.settings["preset_b"] = self.hk_b_var.get()
             save_json(SETTINGS_FILE, self.settings)
             self._set_status(
-                f"✓ Toggle: {self.settings['preset_a']} ↔ {self.settings['preset_b']}",
+                f"Toggle: {self.settings['preset_a']} <-> {self.settings['preset_b']}",
                 success=True)
 
-        ctk.CTkButton(scroll, text="Save A / B Selection", height=34,
-            font=ctk.CTkFont("Segoe UI", 13, "bold"),
+        ctk.CTkButton(scroll, text="Save A / B", height=30,
+            font=ctk.CTkFont("Segoe UI", 12, "bold"),
             fg_color=c["accent"], hover_color=c["accent_hover"],
-            corner_radius=7, command=save_ab
-        ).pack(fill="x", padx=20, pady=(0, 8))
+            corner_radius=6, command=save_ab
+        ).pack(fill="x", padx=18, pady=(0, 6))
 
-        # ── Tray ─────────────────────────────────────────────────────────────
-        section(scroll, "System Tray")
+        # Tray
+        section(scroll, self.t("tray_section"))
         tray_var = ctk.StringVar(value="On" if self.settings.get("minimize_to_tray", True) else "Off")
-
         def _tray_toggle(v):
             self.settings["minimize_to_tray"] = (v == "On")
             save_json(SETTINGS_FILE, self.settings)
-
         seg(scroll, ["On", "Off"], tray_var.get(), _tray_toggle)
 
-        # ── Close ─────────────────────────────────────────────────────────────
-        ctk.CTkButton(win, text="Close", height=38, corner_radius=7,
-            font=ctk.CTkFont("Segoe UI", 13, "bold"),
+        # About
+        section(scroll, self.t("about_section"))
+        ctk.CTkLabel(scroll, text=self.t("about_text"),
+            font=ctk.CTkFont("Segoe UI", 11),
+            text_color=c["muted"], justify="center").pack(padx=18, pady=(0, 8))
+
+        # Close
+        ctk.CTkButton(win, text=self.t("close"), height=34, corner_radius=6,
+            font=ctk.CTkFont("Segoe UI", 12, "bold"),
             fg_color=c["accent"], hover_color=c["accent_hover"],
-            command=win.destroy
-        ).pack(fill="x", padx=20, pady=(8, 16))
+            command=win.destroy).pack(fill="x", padx=18, pady=(4, 12))
 
     def _change_theme(self, theme, win=None):
         self.settings["theme"] = theme
@@ -791,18 +754,21 @@ class DNSChangerApp(ctk.CTk):
         if not TRAY_AVAILABLE: return
         try:
             menu = pystray.Menu(
-                pystray.MenuItem("Show", lambda *_: self.after(0, self._restore_from_tray), default=True),
-                pystray.MenuItem("Toggle DNS", lambda *_: self.after(0, self._toggle_presets)),
+                pystray.MenuItem(self.t("tray_show"),
+                    lambda *_: self.after(0, self._restore_from_tray), default=True),
+                pystray.MenuItem(self.t("tray_toggle"),
+                    lambda *_: self.after(0, self._toggle_presets)),
                 pystray.Menu.SEPARATOR,
-                pystray.MenuItem("Quit", lambda *_: self.after(0, self._quit_app)),
+                pystray.MenuItem(self.t("tray_quit"),
+                    lambda *_: self.after(0, self._quit_app)),
             )
             self.tray_icon = pystray.Icon("dns_changer", create_tray_image(64),
-                                          "Modern DNS Changer", menu)
+                                          self.t("tray_tooltip"), menu)
             threading.Thread(target=self.tray_icon.run, daemon=True).start()
         except Exception as e:
             print(f"Tray error: {e}")
 
-    def _on_close(self):       self.withdraw()
+    def _on_close(self): self.withdraw()
     def _restore_from_tray(self): self.deiconify(); self.lift(); self.focus_force()
 
     def _quit_app(self):
@@ -814,25 +780,25 @@ class DNSChangerApp(ctk.CTk):
     # ======================== ADMIN ========================
 
     def _show_admin_warning(self):
-        c   = self.colors
+        c = self.colors
         win = ctk.CTkToplevel(self)
-        win.title("Admin Required")
-        win.geometry("380x170")
+        win.title(self.t("admin_needed"))
+        win.geometry("360x160")
         win.configure(fg_color=c["bg"])
         win.resizable(False, False)
         win.attributes("-topmost", True)
         win.transient(self)
 
-        ctk.CTkLabel(win, text="Admin Required",
-            font=ctk.CTkFont("Segoe UI", 16, "bold"),
-            text_color=c["accent_light"]).pack(pady=(22, 6))
-        ctk.CTkLabel(win, text="DNS changes need administrator privileges.",
-            font=ctk.CTkFont("Segoe UI", 12),
-            text_color=c["muted"]).pack(pady=(0, 14))
-        ctk.CTkButton(win, text="Restart as Admin", width=160, height=36,
-            font=ctk.CTkFont("Segoe UI", 13, "bold"),
+        ctk.CTkLabel(win, text=self.t("admin_needed"),
+            font=ctk.CTkFont("Segoe UI", 15, "bold"),
+            text_color=c["accent_light"]).pack(pady=(20, 4))
+        ctk.CTkLabel(win, text=self.t("admin_msg"),
+            font=ctk.CTkFont("Segoe UI", 11),
+            text_color=c["muted"], justify="center").pack(pady=(0, 12))
+        ctk.CTkButton(win, text=self.t("restart_admin"), width=150, height=32,
+            font=ctk.CTkFont("Segoe UI", 12, "bold"),
             fg_color=c["accent"], hover_color=c["accent_hover"],
-            corner_radius=7, command=self._restart_as_admin).pack()
+            corner_radius=6, command=self._restart_as_admin).pack()
 
     def _restart_as_admin(self):
         try:

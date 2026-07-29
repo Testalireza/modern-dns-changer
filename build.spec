@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for Modern DNS Changer
+# PyInstaller spec for Modern DNS Changer v3.0
 
 block_cipher = None
 
@@ -12,9 +12,6 @@ a = Analysis(
     ],
     hiddenimports=[
         'customtkinter',
-        'keyboard',
-        'keyboard._winkeyboard',
-        'keyboard._nixkeyboard',
         'pystray',
         'pystray._win32',
         'PIL',
@@ -23,7 +20,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['matplotlib', 'numpy', 'scipy', 'pandas', 'tkinter.test'],
+    excludes=['matplotlib', 'numpy', 'scipy', 'pandas', 'tkinter.test', 'keyboard'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,

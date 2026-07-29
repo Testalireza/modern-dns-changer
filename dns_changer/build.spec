@@ -8,13 +8,15 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[
-        # Include customtkinter data files
+        ('translations.py', '.'),
     ],
     hiddenimports=[
         'customtkinter',
         'keyboard',
         'keyboard._winkeyboard',
         'keyboard._nixkeyboard',
+        'pystray',
+        'pystray._win32',
         'PIL',
         'PIL._tkinter_finder',
     ],
@@ -44,11 +46,11 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,  # No console window - GUI only
+    console=False,
     disable_windowed_traceback=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    uac_admin=True,  # Request admin elevation on launch
-    icon='icon.ico',  # App icon
+    uac_admin=True,
+    icon='icon.ico',
 )

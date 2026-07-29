@@ -9,6 +9,7 @@ dist/
 
 # Generated files (user-specific)
 presets.json
+settings.json
 hotkey_config.json
 icon.ico
 icon.png

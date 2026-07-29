@@ -1,31 +1,25 @@
 # Modern DNS Changer
 
-A modern Windows 11 DNS changer desktop app with a beautiful dark mode UI and blue accent colors.
+A modern Windows 11 DNS changer desktop app with dark/light mode, English/Persian language support, and a system tray icon.
 
 ## ✨ Features
 
 - **One-click DNS switching** — Change DNS for your WiFi adapter instantly (silent `netsh` commands)
 - **Custom DNS presets** — Save preferred + secondary DNS combos with custom names
 - **Global hotkey toggle** — Switch between two selected presets with a keyboard shortcut (default: `Ctrl+Shift+D`)
-- **Auto (DHCP) reset** — Reset DNS back to automatic with one click
+- **System tray icon** — Minimize to tray, toggle DNS from the tray menu, restore with one click
+- **Dark & Light mode** — Switch between dark navy and light themes in Settings
+- **English & Persian** — Full UI translation with RTL support for Persian (فارسی)
+- **Settings panel** — Theme, language, tray, and hotkey all configurable in one place
 - **Windows 11 native styling** — Mica backdrop, dark title bar, rounded corners
 - **Auto-elevate** — Requests admin privileges automatically (required for DNS changes)
-- **Dark mode UI** — Deep navy theme with blue accent buttons (`#1F6AA5`)
 - **Auto-detects WiFi adapter** — Prioritizes wireless adapters
-
-## 📸 Preview
-
-- Dark navy background (`#1A1A2E`)
-- Card-based layout (`#16213E`)
-- Blue accent buttons (`#1F6AA5`)
-- Segoe UI typography
-- Rounded corners everywhere
 
 ## 🚀 Quick Start (Python)
 
 1. Install dependencies:
    ```bash
-   pip install customtkinter keyboard
+   pip install customtkinter keyboard pystray pillow
    ```
 
 2. Run as Administrator:
@@ -39,7 +33,7 @@ Or right-click `run.ps1` → "Run with PowerShell" (auto-elevates to Admin).
 
 1. Install build dependencies:
    ```powershell
-   pip install customtkinter keyboard pyinstaller pillow
+   pip install customtkinter keyboard pyinstaller pillow pystray
    ```
 
 2. Generate the app icon:
@@ -58,6 +52,7 @@ The .exe:
 - Runs with **no console window** (GUI only)
 - **Auto-requests admin elevation** on launch (UAC prompt)
 - Includes the app icon
+- Supports **system tray**, **dark/light mode**, and **English/Persian**
 - Can be copied anywhere — no Python needed
 
 ## 📁 Project Structure
@@ -65,13 +60,14 @@ The .exe:
 ```
 modern-dns-changer/
 ├── main.py              # Main application
+├── translations.py      # English & Persian translations
 ├── build.spec           # PyInstaller build configuration
 ├── build.ps1            # Windows build script
 ├── run.ps1              # Run script (auto-elevates to admin)
 ├── generate_icon.py     # Generates the app .ico icon
 ├── requirements.txt     # Python dependencies
 ├── presets.json          # Saved DNS presets (auto-generated)
-├── hotkey_config.json   # Hotkey settings (auto-generated)
+├── settings.json         # Settings: theme, language, hotkey (auto-generated)
 └── icon.ico             # App icon (auto-generated)
 ```
 
@@ -83,13 +79,19 @@ modern-dns-changer/
 4. Click "Save Hotkey"
 5. Now pressing the hotkey anywhere on your PC toggles between the two presets
 
-## 🎨 Customization
+## 📱 System Tray
 
-Edit the color constants at the top of `main.py`:
-- `ACCENT_BLUE` — Button color
-- `BG_COLOR` — Window background
-- `CARD_COLOR` — Card backgrounds
-- `TEXT_COLOR` — Main text color
+- Closing the window sends it to the system tray (can be disabled in Settings)
+- Right-click the tray icon to: Show app, Toggle DNS, or Quit
+- The hotkey works even when the app is in the tray
+
+## 🎨 Settings
+
+Open the Settings panel (⚙ button in the header) to configure:
+- **Appearance**: Dark Mode / Light Mode
+- **Language**: English / Persian (فارسی)
+- **System Tray**: Enable/disable minimize-to-tray
+- **About**: App info
 
 ## ⚠️ Requirements
 

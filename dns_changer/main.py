@@ -9,8 +9,13 @@ import keyboard
 from tkinter import messagebox
 
 # ======================== CONFIG ========================
-APP_NAME = "DNS Changer"
-PRESETS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "presets.json")
+APP_NAME = "Modern DNS Changer"
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+# When running as .exe, use the exe's directory
+if getattr(sys, 'frozen', False):
+    APP_DIR = os.path.dirname(sys.executable)
+
+PRESETS_FILE = os.path.join(APP_DIR, "presets.json")
 DEFAULT_ADAPTER = "Wi-Fi"
 
 ctk.set_appearance_mode("dark")
@@ -22,10 +27,84 @@ ACCENT_BLUE_HOVER = "#144870"
 ACCENT_LIGHT = "#2D8FD6"
 BG_COLOR = "#1A1A2E"
 CARD_COLOR = "#16213E"
+ENTRY_BG = "#0F3460"
 TEXT_COLOR = "#EAEAEA"
 MUTED_COLOR = "#8892B0"
 SUCCESS_GREEN = "#4ADE80"
 DANGER_RED = "#EF4444"
+
+# ======================== WINDOWS 11 NATIVE EFFECTS ========================
+
+def apply_windows11_effects(hwnd):
+    """Apply Windows 11 Mica backdrop and rounded corners to the window."""
+    if not sys.platform == 'win32':
+        return
+
+    try:
+        dwm = ctypes.WinDLL("dwmapi.dll")
+
+        # --- Mica Backdrop (Windows 11 22H2+) ---
+        # DWMWA_SYSTEMBACKDROP_TYPE = 38
+        DWMSBT_MAINWINDOW = 2  # Mica
+        try:
+            dwm.DwmSetWindowAttribute(
+                ctypes.c_void_p(hwnd),
+                ctypes.c_int(38),  # DWMWA_SYSTEMBACKDROP_TYPE
+                ctypes.byref(ctypes.c_int(DWMSBT_MAINWINDOW)),
+                ctypes.c_int(ctypes.sizeof(ctypes.c_int))
+            )
+        except Exception:
+            pass
+
+        # --- Dark mode title bar ---
+        # DWMWA_USE_IMMERSIVE_DARK_MODE = 20 (before 20H1) or 19 (after)
+        for attr in (20, 19):
+            try:
+                dwm.DwmSetWindowAttribute(
+                    ctypes.c_void_p(hwnd),
+                    ctypes.c_int(attr),
+                    ctypes.byref(ctypes.c_int(1)),  # TRUE
+                    ctypes.c_int(ctypes.sizeof(ctypes.c_int))
+                )
+            except Exception:
+                pass
+
+        # --- Rounded corners ---
+        # DWMWA_WINDOW_CORNER_PREFERENCE = 33
+        DWMWCP_ROUND = 2
+        try:
+            dwm.DwmSetWindowAttribute(
+                ctypes.c_void_p(hwnd),
+                ctypes.c_int(33),
+                ctypes.byref(ctypes.c_int(DWMWCP_ROUND)),
+                ctypes.c_int(ctypes.sizeof(ctypes.c_int))
+            )
+        except Exception:
+            pass
+
+        # --- Extend frame into client area for backdrop ---
+        # Extend frame to allow Mica to show through
+        margins = ctypes.c_int(-1)  # -1 = extend to whole window
+        try:
+            dwm.DwmExtendFrameIntoClientArea(
+                ctypes.c_void_p(hwnd),
+                ctypes.byref(ctypes.c_int(margins))
+            )
+        except Exception:
+            pass
+
+    except Exception as e:
+        print(f"Win11 effects: {e}")
+
+
+def get_hwnd(window):
+    """Get the Windows HWND from a tkinter/customtkinter window."""
+    try:
+        window.update_idletasks()
+        return ctypes.windll.user32.GetParent(window.winfo_id())
+    except Exception:
+        return None
+
 
 # ======================== DNS LOGIC ========================
 
@@ -38,7 +117,10 @@ def is_admin():
 def run_cmd(command):
     """Run a command silently via subprocess."""
     try:
-        subprocess.run(command, shell=True, capture_output=True, text=True, timeout=10)
+        # CREATE_NO_WINDOW flag to hide console on .exe
+        creationflags = 0x08000000 if sys.platform == 'win32' else 0
+        subprocess.run(command, shell=True, capture_output=True, text=True,
+                      timeout=10, creationflags=creationflags)
         return True
     except Exception as e:
         print(f"Command failed: {e}")
@@ -46,16 +128,13 @@ def run_cmd(command):
 
 def set_dns(primary, secondary, adapter=DEFAULT_ADAPTER):
     """Set DNS for the given adapter using netsh."""
-    # Clear existing DNS (set to DHCP / auto)
     run_cmd(f'netsh interface ip set dns name="{adapter}" dhcp')
 
-    # Set primary DNS
     if primary:
         ok1 = run_cmd(f'netsh interface ip set dns name="{adapter}" static {primary} primary')
     else:
         ok1 = run_cmd(f'netsh interface ip set dns name="{adapter}" dhcp')
 
-    # Set secondary DNS
     if secondary:
         ok2 = run_cmd(f'netsh interface ip add dns name="{adapter}" {secondary} index=2')
     else:
@@ -94,11 +173,9 @@ def get_adapters():
                 continue
             parts = line.split()
             if len(parts) >= 4:
-                # Adapter name is typically the last column(s)
                 name = ' '.join(parts[3:])
                 adapters.append(name)
         if not adapters:
-            # Fallback
             adapters = [DEFAULT_ADAPTER]
         return adapters
     except Exception:
@@ -121,7 +198,7 @@ def save_presets(presets):
 
 def load_hotkey_config():
     """Load hotkey toggle configuration."""
-    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hotkey_config.json")
+    config_path = os.path.join(APP_DIR, "hotkey_config.json")
     if os.path.exists(config_path):
         try:
             with open(config_path, 'r') as f:
@@ -131,7 +208,7 @@ def load_hotkey_config():
     return {"hotkey": "ctrl+shift+d", "preset_a": "", "preset_b": ""}
 
 def save_hotkey_config(config):
-    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hotkey_config.json")
+    config_path = os.path.join(APP_DIR, "hotkey_config.json")
     with open(config_path, 'w') as f:
         json.dump(config, f, indent=2)
 
@@ -146,17 +223,26 @@ class DNSChangerApp(ctk.CTk):
         self.toggle_state = 0  # 0 = preset_a, 1 = preset_b
 
         self.title(APP_NAME)
-        self.geometry("640x780")
-        self.minsize(580, 700)
+        self.geometry("640x820")
+        self.minsize(580, 740)
         self.configure(fg_color=BG_COLOR)
 
         self._build_ui()
         self._refresh_preset_dropdowns()
         self._start_hotkey_listener()
 
+        # Apply Windows 11 native effects (Mica, dark titlebar, rounded corners)
+        self.after(100, self._apply_win11_effects)
+
         # Admin warning
         if not is_admin():
             self.after(500, self._show_admin_warning)
+
+    def _apply_win11_effects(self):
+        """Apply Windows 11 Mica backdrop and rounded corners."""
+        hwnd = get_hwnd(self)
+        if hwnd:
+            apply_windows11_effects(hwnd)
 
     # ---------- UI BUILD ----------
 
@@ -166,8 +252,8 @@ class DNSChangerApp(ctk.CTk):
         header_frame.pack(fill="x", padx=30, pady=(25, 5))
 
         title_label = ctk.CTkLabel(
-            header_frame, text="🌐  DNS Changer",
-            font=ctk.CTkFont(family="Segoe UI", size=28, weight="bold"),
+            header_frame, text="🌐  Modern DNS Changer",
+            font=ctk.CTkFont(family="Segoe UI", size=26, weight="bold"),
             text_color=TEXT_COLOR
         )
         title_label.pack(anchor="w")
@@ -241,7 +327,7 @@ class DNSChangerApp(ctk.CTk):
 
         # Status display
         self.status_label = ctk.CTkLabel(
-            quick_frame, text="● Ready",
+            quick_frame, text="●  Ready",
             font=ctk.CTkFont(family="Segoe UI", size=12),
             text_color=MUTED_COLOR
         )
@@ -280,7 +366,7 @@ class DNSChangerApp(ctk.CTk):
         self.name_entry = ctk.CTkEntry(
             add_frame, placeholder_text="Preset name (e.g. Google DNS)",
             height=38, corner_radius=10,
-            fg_color="#0F3460", text_color=TEXT_COLOR,
+            fg_color=ENTRY_BG, text_color=TEXT_COLOR,
             border_color=ACCENT_BLUE, border_width=1
         )
         self.name_entry.pack(fill="x", pady=(0, 8))
@@ -288,7 +374,7 @@ class DNSChangerApp(ctk.CTk):
         self.primary_entry = ctk.CTkEntry(
             add_frame, placeholder_text="Preferred DNS  (e.g. 8.8.8.8)",
             height=38, corner_radius=10,
-            fg_color="#0F3460", text_color=TEXT_COLOR,
+            fg_color=ENTRY_BG, text_color=TEXT_COLOR,
             border_color=ACCENT_BLUE, border_width=1
         )
         self.primary_entry.pack(fill="x", pady=(0, 8))
@@ -296,7 +382,7 @@ class DNSChangerApp(ctk.CTk):
         self.secondary_entry = ctk.CTkEntry(
             add_frame, placeholder_text="Secondary DNS  (e.g. 8.8.4.4)",
             height=38, corner_radius=10,
-            fg_color="#0F3460", text_color=TEXT_COLOR,
+            fg_color=ENTRY_BG, text_color=TEXT_COLOR,
             border_color=ACCENT_BLUE, border_width=1
         )
         self.secondary_entry.pack(fill="x", pady=(0, 10))
@@ -369,7 +455,7 @@ class DNSChangerApp(ctk.CTk):
 
         self.hotkey_entry = ctk.CTkEntry(
             hk_row2, height=36, corner_radius=10,
-            fg_color="#0F3460", text_color=TEXT_COLOR,
+            fg_color=ENTRY_BG, text_color=TEXT_COLOR,
             border_color=ACCENT_BLUE, border_width=1
         )
         self.hotkey_entry.insert(0, self.hotkey_config.get("hotkey", "ctrl+shift+d"))
@@ -398,7 +484,7 @@ class DNSChangerApp(ctk.CTk):
 
         for name, dns in self.presets.items():
             card = ctk.CTkFrame(
-                self.scroll_frame, fg_color="#0F3460", corner_radius=10
+                self.scroll_frame, fg_color=ENTRY_BG, corner_radius=10
             )
             card.pack(fill="x", pady=4, padx=2)
 
@@ -439,7 +525,6 @@ class DNSChangerApp(ctk.CTk):
 
     def _load_adapters(self):
         adapters = get_adapters()
-        # Also try to get wireless adapters specifically
         try:
             result = subprocess.run(
                 'netsh wlan show interfaces',
@@ -460,7 +545,6 @@ class DNSChangerApp(ctk.CTk):
         if not adapters:
             adapters = [DEFAULT_ADAPTER]
         self.adapter_menu.configure(values=adapters)
-        # Set to WiFi if available
         for a in adapters:
             if 'wi' in a.lower() or 'wi-fi' in a.lower() or 'wifi' in a.lower():
                 self.adapter_var.set(a)
@@ -516,9 +600,8 @@ class DNSChangerApp(ctk.CTk):
         threading.Thread(target=do_apply, daemon=True).start()
 
     def _apply_dns(self):
-        """Apply DNS from the quick action - apply the selected preset or use manual."""
+        """Apply DNS from the quick action."""
         adapter = self.adapter_var.get()
-        # Apply the first preset if exists, otherwise prompt
         if self.presets:
             first_name = list(self.presets.keys())[0]
             self._apply_preset(first_name, self.presets[first_name])
@@ -553,7 +636,6 @@ class DNSChangerApp(ctk.CTk):
         self.hk_a_menu.configure(values=names)
         self.hk_b_menu.configure(values=names)
 
-        # Restore saved selections
         if self.hotkey_config.get("preset_a") in names:
             self.hk_a_var.set(self.hotkey_config["preset_a"])
         elif names:
@@ -576,7 +658,6 @@ class DNSChangerApp(ctk.CTk):
         self.hotkey_config["preset_b"] = self.hk_b_var.get()
         save_hotkey_config(self.hotkey_config)
 
-        # Restart hotkey listener
         self._stop_hotkey_listener()
         self._start_hotkey_listener()
 
@@ -629,8 +710,6 @@ class DNSChangerApp(ctk.CTk):
         warn.configure(fg_color=BG_COLOR)
         warn.resizable(False, False)
         warn.attributes("-topmost", True)
-
-        # Center relative to main window
         warn.transient(self)
 
         ctk.CTkLabel(
@@ -654,10 +733,18 @@ class DNSChangerApp(ctk.CTk):
 
     def _restart_as_admin(self):
         try:
-            ctypes.windll.shell32.ShellExecuteW(
-                None, "runas", sys.executable,
-                f'"{os.path.abspath(__file__)}"', None, 1
-            )
+            if getattr(sys, 'frozen', False):
+                # Running as .exe
+                exe_path = sys.executable
+                ctypes.windll.shell32.ShellExecuteW(
+                    None, "runas", exe_path, None, None, 1
+                )
+            else:
+                # Running as script
+                ctypes.windll.shell32.ShellExecuteW(
+                    None, "runas", sys.executable,
+                    f'"{os.path.abspath(__file__)}"', None, 1
+                )
             self.destroy()
         except Exception as e:
             messagebox.showerror("Error", f"Failed to restart as admin:\n{e}")

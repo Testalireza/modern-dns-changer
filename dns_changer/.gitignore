@@ -1,0 +1,22 @@
+# Build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+build/
+dist/
+*.egg-info/
+
+# Generated files (user-specific)
+presets.json
+hotkey_config.json
+icon.ico
+icon.png
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+desktop.ini

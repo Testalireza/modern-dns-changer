@@ -5,6 +5,7 @@ import subprocess
 import sys
 import ctypes
 import threading
+import tkinter as tk
 from PIL import Image, ImageDraw
 
 from translations import get_text
@@ -21,34 +22,36 @@ DEFAULT_ADAPTER = "Wi-Fi"
 # ======================== COLOR PALETTES ========================
 THEMES = {
     "dark": {
-        "bg":              "#131313",   # slightly brighter than #0A0A0A
-        "card":            "#1A1A1A",
-        "card2":           "#222222",
-        "entry":           "#242424",
-        "selected":        "#0D2137",
-        "selected_border": "#0D5C9E",
+        "bg":              "#141414",
+        "card":            "#1E1E1E",
+        "card2":           "#252525",
+        "entry":           "#2A2A2A",
+        "selected":        "#0D2540",
+        "selected_border": "#1565C0",
         "text":            "#F0F0F0",
-        "muted":           "#808080",
-        "accent":          "#0D5C9E",
-        "accent_hover":    "#0A4A80",
-        "accent_light":    "#1A7FCC",
-        "success":         "#4ADE80",
-        "danger":          "#EF4444",
-        "ping_good":       "#3B82F6",
-        "ping_ok":         "#4ADE80",
-        "ping_bad":        "#F59E0B",
-        "ping_fail":       "#EF4444",
-        "secondary_btn":   "#2A2A2A",
-        "secondary_hover": "#383838",
-        "delete_btn":      "#2A1010",
-        "delete_hover":    "#4A1A1A",
-        "border":          "#2E2E2E",
+        "muted":           "#909090",
+        "accent":          "#1565C0",
+        "accent_hover":    "#0D47A1",
+        "accent_light":    "#42A5F5",
+        "success":         "#4CAF50",
+        "danger":          "#F44336",
+        "ping_green":      "#4CAF50",
+        "ping_orange":     "#FF9800",
+        "ping_red":        "#F44336",
+        "ping_blue":       "#1565C0",
+        "secondary_btn":   "#2C2C2C",
+        "secondary_hover": "#3A3A3A",
+        "delete_btn":      "#3B1212",
+        "delete_hover":    "#5C1A1A",
+        "border":          "#333333",
+        "scrollbar":       "#333333",
+        "scrollbar_hover": "#1565C0",
     },
     "light": {
-        "bg":              "#F3F4F6",
+        "bg":              "#F0F2F5",
         "card":            "#FFFFFF",
-        "card2":           "#F8F9FA",
-        "entry":           "#EEF0F3",
+        "card2":           "#F7F8FA",
+        "entry":           "#EAECEF",
         "selected":        "#DBEAFE",
         "selected_border": "#1D4ED8",
         "text":            "#111827",
@@ -58,15 +61,17 @@ THEMES = {
         "accent_light":    "#2563EB",
         "success":         "#16A34A",
         "danger":          "#DC2626",
-        "ping_good":       "#2563EB",
-        "ping_ok":         "#16A34A",
-        "ping_bad":        "#D97706",
-        "ping_fail":       "#DC2626",
+        "ping_green":      "#16A34A",
+        "ping_orange":     "#D97706",
+        "ping_red":        "#DC2626",
+        "ping_blue":       "#1D4ED8",
         "secondary_btn":   "#E5E7EB",
         "secondary_hover": "#D1D5DB",
         "delete_btn":      "#FEE2E2",
         "delete_hover":    "#FECACA",
         "border":          "#E5E7EB",
+        "scrollbar":       "#D1D5DB",
+        "scrollbar_hover": "#1D4ED8",
     }
 }
 
@@ -116,9 +121,8 @@ def is_admin():
 def _run_batch(cmds, timeout=6):
     try:
         cf = 0x08000000 if sys.platform == 'win32' else 0
-        full = ' && '.join(cmds)
-        subprocess.run(full, shell=True, capture_output=True,
-                       text=True, timeout=timeout, creationflags=cf)
+        subprocess.run(' && '.join(cmds), shell=True,
+            capture_output=True, text=True, timeout=timeout, creationflags=cf)
     except Exception:
         pass
     return True
@@ -155,44 +159,43 @@ def get_adapters():
 
 # ======================== PING ========================
 
-def ping_dns(ip, count=3, timeout=2000):
-    """Ping a DNS server and return (avg_ms, min_ms, loss_pct) or (None, None, 100) on failure."""
+def ping_dns(ip, count=3, timeout_ms=2000):
+    """Returns avg_ms (int) or -1 on full timeout."""
     try:
         cf = 0x08000000 if sys.platform == 'win32' else 0
         r = subprocess.run(
-            f'ping -n {count} -w {timeout} {ip}',
-            shell=True, capture_output=True, text=True, timeout=15, creationflags=cf)
-
+            f'ping -n {count} -w {timeout_ms} {ip}',
+            shell=True, capture_output=True, text=True,
+            timeout=max(15, count * timeout_ms / 1000 + 3),
+            creationflags=cf)
         times = []
-        lost = 0
         for line in r.stdout.splitlines():
-            line = line.strip()
-            if 'time=' in line.lower() or 'time<' in line.lower():
-                # Windows format: "Reply from 8.8.8.8: bytes=32 time=12ms TTL=117"
-                for part in line.split():
-                    part_lower = part.lower()
-                    if part_lower.startswith('time=') or part_lower.startswith('time<'):
-                        val = part_lower.split('=')[1].split('<')[1] if '<' in part_lower else part_lower.split('=')[1]
-                        val = val.replace('ms', '').replace('M', '').replace('s', '')
-                        try:
-                            times.append(int(val))
-                        except ValueError:
-                            try:
-                                times.append(int(float(val)))
-                            except ValueError:
-                                pass
-            elif 'destination host unreachable' in line.lower() or 'request timed out' in line.lower():
-                lost += 1
-
-        if not times:
-            return None, None, 100
-
-        loss_pct = (lost / count) * 100
-        avg = sum(times) // len(times)
-        mn  = min(times)
-        return avg, mn, loss_pct
+            l = line.strip().lower()
+            for part in l.split():
+                if part.startswith('time=') or part.startswith('time<'):
+                    raw = part.replace('time=', '').replace('time<', '').replace('ms', '')
+                    try:
+                        times.append(int(float(raw)))
+                    except ValueError:
+                        pass
+        return (sum(times) // len(times)) if times else -1
     except Exception:
-        return None, None, 100
+        return -1
+
+def ping_color(ms, colors):
+    """Return color string based on latency."""
+    if ms < 0:
+        return colors["ping_red"]
+    if ms < 100:
+        return colors["ping_green"]
+    if ms <= 200:
+        return colors["ping_orange"]
+    return colors["ping_red"]
+
+def ping_text(ms):
+    if ms < 0:
+        return "Timeout"
+    return f"{ms}ms"
 
 # ======================== STORAGE ========================
 
@@ -221,7 +224,7 @@ def create_tray_image(size=64):
     draw = ImageDraw.Draw(img)
     m    = int(size * 0.08)
     draw.rounded_rectangle([m, m, size-m, size-m],
-        radius=int(size*0.2), fill=(13, 92, 158, 255))
+        radius=int(size * 0.2), fill=(21, 101, 192, 255))
     c, r = size // 2, int(size * 0.28)
     lw   = max(2, int(size * 0.04))
     w    = (255, 255, 255, 200)
@@ -230,14 +233,117 @@ def create_tray_image(size=64):
     draw.ellipse([c-r, c-r, c+r, c+r],        outline=w, width=lw)
     return img
 
+# ======================== SMOOTH SCROLL CANVAS ========================
+
+class SmoothScrollFrame(tk.Frame):
+    """A smooth-scrolling container using native Tk Canvas.
+    All content should be placed inside .inner (a CTkFrame child).
+    """
+    def __init__(self, parent, bg_color, **kwargs):
+        super().__init__(parent, bg=bg_color, **kwargs)
+
+        self._bg = bg_color
+        self._target_y   = 0.0   # target scroll position in pixels
+        self._current_y  = 0.0   # current rendered scroll position
+        self._animating  = False
+        self._STEP       = 0.22  # interpolation factor (0-1, higher = snappier)
+        self._THRESHOLD  = 0.5   # pixels — stop animating below this
+
+        # Canvas
+        self.canvas = tk.Canvas(self, bg=bg_color, highlightthickness=0,
+                                bd=0, relief='flat')
+        self.canvas.pack(side="left", fill="both", expand=True)
+
+        # Scrollbar (custom thin one)
+        self.vbar = tk.Scrollbar(self, orient="vertical",
+                                 command=self._on_scrollbar,
+                                 width=6, bg=bg_color,
+                                 troughcolor=bg_color,
+                                 activebackground="#1565C0",
+                                 relief='flat', bd=0)
+        self.vbar.pack(side="right", fill="y")
+        self.canvas.configure(yscrollcommand=self.vbar.set)
+
+        # Inner frame — pack content here
+        self.inner = ctk.CTkFrame(self.canvas, fg_color=bg_color, corner_radius=0)
+        self._window = self.canvas.create_window((0, 0), window=self.inner,
+                                                  anchor="nw")
+
+        # Bindings
+        self.inner.bind("<Configure>", self._on_inner_configure)
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
+        self.canvas.bind("<MouseWheel>",    self._on_mousewheel)
+        self.inner.bind("<MouseWheel>",     self._on_mousewheel)
+
+        # Bind mousewheel to all child widgets recursively via event propagation
+        self.bind_all("<MouseWheel>", self._on_mousewheel)
+
+    def _on_inner_configure(self, event):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _on_canvas_configure(self, event):
+        self.canvas.itemconfig(self._window, width=event.width)
+
+    def _on_scrollbar(self, *args):
+        self.canvas.yview(*args)
+        bbox = self.canvas.bbox("all")
+        if bbox:
+            total  = bbox[3] - bbox[1]
+            vis    = self.canvas.winfo_height()
+            frac   = float(self.canvas.yview()[0])
+            self._current_y = frac * total
+            self._target_y  = self._current_y
+
+    def _on_mousewheel(self, event):
+        # Windows delta is ±120 per notch; we scroll 60px per notch
+        delta = -event.delta / 120.0
+        bbox  = self.canvas.bbox("all")
+        if not bbox:
+            return
+        total  = bbox[3] - bbox[1]
+        vis    = self.canvas.winfo_height()
+        scroll = delta * 60
+        self._target_y = max(0.0, min(self._target_y + scroll, total - vis))
+        if not self._animating:
+            self._animating = True
+            self._animate()
+
+    def _animate(self):
+        diff = self._target_y - self._current_y
+        if abs(diff) < self._THRESHOLD:
+            self._current_y = self._target_y
+            self._animating = False
+        else:
+            self._current_y += diff * self._STEP
+            self.after(16, self._animate)   # ~60fps tick
+
+        bbox = self.canvas.bbox("all")
+        if bbox:
+            total = max(bbox[3] - bbox[1], 1)
+            vis   = self.canvas.winfo_height()
+            frac  = self._current_y / total
+            self.canvas.yview_moveto(frac)
+
+    def scroll_to_top(self):
+        self._target_y  = 0.0
+        self._current_y = 0.0
+        self.canvas.yview_moveto(0)
+
+    def update_bg(self, bg_color):
+        self._bg = bg_color
+        self.configure(bg=bg_color)
+        self.canvas.configure(bg=bg_color)
+        self.inner.configure(fg_color=bg_color)
+        self.vbar.configure(bg=bg_color, troughcolor=bg_color)
+
 # ======================== MAIN APP ========================
 
 class DNSChangerApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.presets = load_json(PRESETS_FILE, {})
-        raw = load_json(SETTINGS_FILE, {})
+        self.presets  = load_json(PRESETS_FILE, {})
+        raw           = load_json(SETTINGS_FILE, {})
 
         if "theme" not in raw:
             raw["theme"] = detect_windows_theme()
@@ -256,20 +362,20 @@ class DNSChangerApp(ctk.CTk):
         self.lang            = self.settings["language"]
         self.toggle_state    = 0
         self.selected_preset = None
-        self.ping_labels     = {}   # preset_name -> CTkLabel for ping result
-        self.ping_buttons    = {}   # preset_name -> CTkButton for ping button
+        self.ping_labels     = {}
+        self.ping_buttons    = {}
 
         ctk.set_appearance_mode(self.settings["theme"])
         self.title("Modern DNS Changer")
-        self.geometry("780x560")
-        self.minsize(640, 480)
+        self.geometry("800x580")
+        self.minsize(660, 500)
         self.configure(fg_color=self.colors["bg"])
         self.resizable(True, True)
 
         self.tray_icon = None
         self._build_ui()
 
-        self.after(120, lambda: apply_windows11_effects(
+        self.after(150, lambda: apply_windows11_effects(
             get_hwnd(self), dark=(self.settings["theme"] == "dark")))
 
         self._bind_hotkey()
@@ -288,27 +394,22 @@ class DNSChangerApp(ctk.CTk):
     def t(self, key, **kw):
         return get_text(self.lang, key, **kw)
 
-    # ======================== HOTKEY (window-focus only) ========================
+    # ======================== HOTKEY ========================
 
     def _hotkey_str_to_tk(self, hk):
         parts = [p.strip().lower() for p in hk.split('+')]
-        mods  = []
-        key   = parts[-1]
+        mods, key = [], parts[-1]
         for p in parts[:-1]:
-            if p == 'ctrl':    mods.append('Control')
-            elif p == 'shift':  mods.append('Shift')
-            elif p == 'alt':    mods.append('Alt')
-        mod_str = ''.join(f'<{m}-' for m in mods)
+            if p == 'ctrl':   mods.append('Control')
+            elif p == 'shift': mods.append('Shift')
+            elif p == 'alt':   mods.append('Alt')
         if mods:
-            return mod_str + key + '>'
-        if key.startswith('f') and key[1:].isdigit():
-            return f'<{key.upper()}>'
-        return f'<{key}>'
+            return ''.join(f'<{m}-' for m in mods) + key + '>'
+        return f'<{key.upper()}>' if (key.startswith('f') and key[1:].isdigit()) else f'<{key}>'
 
     def _bind_hotkey(self):
-        hk = self.settings.get("hotkey", "F9").strip()
         try:
-            seq = self._hotkey_str_to_tk(hk)
+            seq = self._hotkey_str_to_tk(self.settings.get("hotkey", "F9").strip())
             self.bind(seq, lambda e: self._toggle_presets())
             self._hotkey_seq = seq
         except Exception:
@@ -322,18 +423,16 @@ class DNSChangerApp(ctk.CTk):
             pass
 
     def _toggle_presets(self):
-        pa = self.settings.get("preset_a", "")
-        pb = self.settings.get("preset_b", "")
+        pa, pb = self.settings.get("preset_a", ""), self.settings.get("preset_b", "")
         if not pa or not pb or pa not in self.presets or pb not in self.presets:
             self._set_status("Set Preset A and B in Settings first", danger=True)
             return
         name = pa if self.toggle_state == 0 else pb
         self.toggle_state = 1 - self.toggle_state
-        dns  = self.presets[name]
         self.selected_preset = name
         self._build_preset_list()
         self._set_status(f"Applying {name}...")
-        threading.Thread(target=lambda: self._do_apply(name, dns), daemon=True).start()
+        threading.Thread(target=lambda: self._do_apply(name, self.presets[name]), daemon=True).start()
 
     # ======================== UI BUILD ========================
 
@@ -343,40 +442,37 @@ class DNSChangerApp(ctk.CTk):
 
     def _build_ui(self):
         self._clear()
-        c = self.colors
+        c  = self.colors
+        bg = c["bg"]
 
-        # ---- MAIN SCROLLABLE CONTAINER (so nothing gets cut off) ----
-        self.scroll_body = ctk.CTkScrollableFrame(self, fg_color="transparent",
-            scrollbar_button_color=c["accent"],
-            scrollbar_button_hover_color=c["accent_hover"])
+        # ── Smooth-scrolling body ──────────────────────────────────────────
+        self.scroll_body = SmoothScrollFrame(self, bg_color=bg)
         self.scroll_body.pack(fill="both", expand=True)
+        sb = self.scroll_body.inner   # everything goes inside here
 
-        sb = self.scroll_body  # shorthand
-
-        # ---- HEADER ----
+        # ── Header ────────────────────────────────────────────────────────
         hdr = ctk.CTkFrame(sb, fg_color="transparent")
-        hdr.pack(fill="x", padx=18, pady=(12, 2))
+        hdr.pack(fill="x", padx=18, pady=(14, 2))
 
         ctk.CTkLabel(hdr, text="Modern DNS Changer",
-            font=ctk.CTkFont("Segoe UI", 18, "bold"),
+            font=ctk.CTkFont("Segoe UI", 20, "bold"),
             text_color=c["text"]).pack(side="left")
 
-        ctk.CTkButton(hdr, text=self.t("settings_btn"),
-            width=85, height=26,
+        ctk.CTkButton(hdr, text="Settings",
+            width=90, height=28,
             font=ctk.CTkFont("Segoe UI", 11, "bold"),
             fg_color=c["accent"], hover_color=c["accent_hover"],
-            corner_radius=6, command=self._open_settings
+            corner_radius=7, command=self._open_settings
         ).pack(side="right")
 
         ctk.CTkLabel(sb, text=self.t("subtitle"),
             font=ctk.CTkFont("Segoe UI", 11),
             text_color=c["muted"]
-        ).pack(anchor="w", padx=18, pady=(0, 8))
+        ).pack(anchor="w", padx=18, pady=(0, 10))
 
-        # ---- ADAPTER ----
+        # ── Adapter ───────────────────────────────────────────────────────
         self._sec(sb, self.t("adapter"))
-        af = ctk.CTkFrame(sb, fg_color=c["card"], corner_radius=8)
-        af.pack(fill="x", padx=18, pady=(2, 6))
+        af = self._card(sb)
 
         self.adapter_var  = ctk.StringVar(value=DEFAULT_ADAPTER)
         self.adapter_menu = ctk.CTkOptionMenu(
@@ -386,250 +482,233 @@ class DNSChangerApp(ctk.CTk):
             button_hover_color=c["accent_hover"], text_color="white",
             dropdown_fg_color=c["card"], dropdown_text_color=c["text"],
             dropdown_hover_color=c["accent"],
-            corner_radius=6, height=30, font=ctk.CTkFont("Segoe UI", 12))
-        self.adapter_menu.pack(fill="x", padx=10, pady=8)
+            corner_radius=7, height=32, font=ctk.CTkFont("Segoe UI", 12))
+        self.adapter_menu.pack(fill="x", padx=12, pady=10)
         threading.Thread(target=self._load_adapters, daemon=True).start()
 
-        # ---- QUICK ACTIONS ----
+        # ── Quick Actions ─────────────────────────────────────────────────
         self._sec(sb, self.t("quick_actions"))
-        qf = ctk.CTkFrame(sb, fg_color=c["card"], corner_radius=8)
-        qf.pack(fill="x", padx=18, pady=(2, 6))
+        qf = self._card(sb)
 
         br = ctk.CTkFrame(qf, fg_color="transparent")
-        br.pack(fill="x", padx=10, pady=(8, 0))
+        br.pack(fill="x", padx=12, pady=(10, 0))
 
-        ctk.CTkButton(br, text=self.t("apply_dns"), height=32,
-            font=ctk.CTkFont("Segoe UI", 12, "bold"),
+        ctk.CTkButton(br, text=self.t("apply_dns"), height=34,
+            font=ctk.CTkFont("Segoe UI", 13, "bold"),
             fg_color=c["accent"], hover_color=c["accent_hover"],
-            corner_radius=6, command=self._apply_selected
-        ).pack(side="left", fill="x", expand=True, padx=(0, 5))
+            corner_radius=7, command=self._apply_selected
+        ).pack(side="left", fill="x", expand=True, padx=(0, 6))
 
-        ctk.CTkButton(br, text=self.t("auto_dhcp"), height=32,
-            font=ctk.CTkFont("Segoe UI", 12, "bold"),
+        ctk.CTkButton(br, text=self.t("auto_dhcp"), height=34,
+            font=ctk.CTkFont("Segoe UI", 13, "bold"),
             fg_color=c["secondary_btn"], hover_color=c["secondary_hover"],
-            text_color=c["text"], corner_radius=6, command=self._set_dhcp
+            text_color=c["text"], corner_radius=7, command=self._set_dhcp
         ).pack(side="left", fill="x", expand=True)
 
         self.status_lbl = ctk.CTkLabel(qf, text=self.t("status_ready"),
             font=ctk.CTkFont("Segoe UI", 11), text_color=c["muted"])
-        self.status_lbl.pack(anchor="w", padx=10, pady=(3, 6))
+        self.status_lbl.pack(anchor="w", padx=12, pady=(4, 8))
 
-        # ---- PRESETS ----
+        # ── DNS Presets ───────────────────────────────────────────────────
         self._sec(sb, self.t("presets"))
-
-        # Presets header row with Ping All button
-        presets_hdr = ctk.CTkFrame(sb, fg_color="transparent")
-        presets_hdr.pack(fill="x", padx=18, pady=(0, 2))
-
-        # Card containing presets list
-        self.presets_outer = ctk.CTkFrame(sb, fg_color=c["card"], corner_radius=8)
-        self.presets_outer.pack(fill="x", padx=18, pady=(0, 6))
-
-        self.presets_scroll = ctk.CTkScrollableFrame(
-            self.presets_outer, fg_color="transparent",
-            scrollbar_button_color=c["accent"],
-            scrollbar_button_hover_color=c["accent_hover"],
-            height=140)
-        self.presets_scroll.pack(fill="x", padx=8, pady=6)
+        self.presets_card = self._card(sb)
+        self.ping_labels  = {}
+        self.ping_buttons = {}
         self._build_preset_list()
 
-        # ---- ADD PRESET ----
+        # ── Add New Preset ────────────────────────────────────────────────
         self._sec(sb, self.t("add_new_preset"))
-        af2 = ctk.CTkFrame(sb, fg_color=c["card"], corner_radius=8)
-        af2.pack(fill="x", padx=18, pady=(2, 10))
+        af2 = self._card(sb, bottom_pad=14)
 
         row1 = ctk.CTkFrame(af2, fg_color="transparent")
-        row1.pack(fill="x", padx=10, pady=(8, 4))
+        row1.pack(fill="x", padx=12, pady=(10, 6))
 
-        eargs = dict(height=30, corner_radius=6,
+        eargs = dict(height=32, corner_radius=7,
             fg_color=c["entry"], text_color=c["text"],
             placeholder_text_color=c["muted"],
             border_color=c["border"], border_width=1,
             font=ctk.CTkFont("Segoe UI", 12))
 
-        self.name_entry = ctk.CTkEntry(row1, placeholder_text=self.t("preset_name"), **eargs)
-        self.name_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        self.name_entry = ctk.CTkEntry(row1,
+            placeholder_text=self.t("preset_name"), **eargs)
+        self.name_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
 
-        self.primary_entry = ctk.CTkEntry(row1, placeholder_text=self.t("preferred_dns"), **eargs)
-        self.primary_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        self.primary_entry = ctk.CTkEntry(row1,
+            placeholder_text=self.t("preferred_dns"), **eargs)
+        self.primary_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
 
-        self.secondary_entry = ctk.CTkEntry(row1, placeholder_text=self.t("secondary_dns"), **eargs)
+        self.secondary_entry = ctk.CTkEntry(row1,
+            placeholder_text=self.t("secondary_dns"), **eargs)
         self.secondary_entry.pack(side="left", fill="x", expand=True)
 
-        ctk.CTkButton(af2, text=self.t("add_preset_btn"), height=30,
-            font=ctk.CTkFont("Segoe UI", 12, "bold"),
+        ctk.CTkButton(af2, text=self.t("add_preset_btn"), height=34,
+            font=ctk.CTkFont("Segoe UI", 13, "bold"),
             fg_color=c["accent"], hover_color=c["accent_hover"],
-            corner_radius=6, command=self._add_preset
-        ).pack(fill="x", padx=10, pady=(0, 8))
+            corner_radius=7, command=self._add_preset
+        ).pack(fill="x", padx=12, pady=(0, 10))
 
     def _sec(self, parent, label):
         ctk.CTkLabel(parent, text=label,
             font=ctk.CTkFont("Segoe UI", 11, "bold"),
             text_color=self.colors["muted"]
-        ).pack(anchor="w", padx=18, pady=(4, 0))
+        ).pack(anchor="w", padx=18, pady=(8, 2))
 
-    # ======================== PRESET LIST (with ping buttons) ========================
+    def _card(self, parent, bottom_pad=6):
+        f = ctk.CTkFrame(parent, fg_color=self.colors["card"], corner_radius=10)
+        f.pack(fill="x", padx=18, pady=(0, bottom_pad))
+        return f
+
+    # ======================== PRESET LIST ========================
 
     def _build_preset_list(self):
         c = self.colors
-        for w in self.presets_scroll.winfo_children():
+        card = self.presets_card
+
+        # Clear existing content
+        for w in card.winfo_children():
             w.destroy()
-        self.ping_labels = {}
+        self.ping_labels  = {}
         self.ping_buttons = {}
 
+        # Empty state
         if not self.presets:
-            ctk.CTkLabel(self.presets_scroll,
-                text=self.t("no_presets"),
+            ctk.CTkLabel(card, text=self.t("no_presets"),
                 font=ctk.CTkFont("Segoe UI", 12),
-                text_color=c["muted"]).pack(pady=15)
-            # Even with no presets, show Ping All button placeholder
-            self._build_ping_all_area()
+                text_color=c["muted"]).pack(pady=18)
+            self._add_ping_all_row(card)
             return
 
         if self.selected_preset not in self.presets:
             self.selected_preset = None
 
+        inner = ctk.CTkFrame(card, fg_color="transparent")
+        inner.pack(fill="x", padx=10, pady=(8, 4))
+
         for name, dns in self.presets.items():
-            is_sel = (name == self.selected_preset)
-            row = ctk.CTkFrame(self.presets_scroll,
-                fg_color=c["selected"] if is_sel else c["card2"],
-                corner_radius=6,
-                border_width=1,
-                border_color=c["selected_border"] if is_sel else c["border"])
-            row.pack(fill="x", pady=2)
+            self._make_preset_row(inner, name, dns)
 
-            # Selection dot
-            dot = ctk.CTkLabel(row, text="●" if is_sel else "○",
-                font=ctk.CTkFont("Segoe UI", 13),
-                text_color=c["accent"] if is_sel else c["border"], width=20)
-            dot.pack(side="left", padx=(6, 0))
+        self._add_ping_all_row(card)
 
-            # Name + DNS info
-            info = ctk.CTkFrame(row, fg_color="transparent")
-            info.pack(side="left", fill="x", expand=True, padx=4, pady=5)
+    def _make_preset_row(self, parent, name, dns):
+        c      = self.colors
+        is_sel = (name == self.selected_preset)
 
-            ctk.CTkLabel(info, text=name,
-                font=ctk.CTkFont("Segoe UI", 12, "bold"),
-                text_color=c["text"], anchor="w").pack(anchor="w")
+        row = ctk.CTkFrame(parent,
+            fg_color   = c["selected"] if is_sel else c["card2"],
+            corner_radius = 8,
+            border_width  = 1,
+            border_color  = c["selected_border"] if is_sel else c["border"])
+        row.pack(fill="x", pady=3)
 
-            dns_text = f"{dns.get('primary','—')}  /  {dns.get('secondary','—')}"
-            ctk.CTkLabel(info, text=dns_text,
-                font=ctk.CTkFont("Consolas", 11),
-                text_color=c["muted"], anchor="w").pack(anchor="w")
+        # Selection dot
+        dot = ctk.CTkLabel(row, text="●" if is_sel else "○",
+            font=ctk.CTkFont("Segoe UI", 14),
+            text_color=c["accent"] if is_sel else c["border"], width=22)
+        dot.pack(side="left", padx=(10, 0))
 
-            # Ping result label (shows latency after ping)
-            ping_lbl = ctk.CTkLabel(row, text="",
-                font=ctk.CTkFont("Segoe UI", 10, "bold"),
-                text_color=c["muted"], width=55, anchor="e")
-            ping_lbl.pack(side="right", padx=(4, 2))
-            self.ping_labels[name] = ping_lbl
+        # Info block
+        info = ctk.CTkFrame(row, fg_color="transparent")
+        info.pack(side="left", fill="x", expand=True, padx=8, pady=8)
 
-            # Ping button
-            ping_btn = ctk.CTkButton(row, text="Ping", width=40, height=24,
-                corner_radius=5,
-                fg_color=c["ping_good"], hover_color=c["accent_hover"],
-                font=ctk.CTkFont("Segoe UI", 10, "bold"),
-                text_color="white",
-                command=lambda n=name: self._ping_preset(n))
-            ping_btn.pack(side="right", padx=2)
-            self.ping_buttons[name] = ping_btn
+        ctk.CTkLabel(info, text=name,
+            font=ctk.CTkFont("Segoe UI", 13, "bold"),
+            text_color=c["text"], anchor="w").pack(anchor="w")
 
-            # Delete button
-            ctk.CTkButton(row, text="X", width=24, height=24,
-                corner_radius=5,
-                fg_color=c["delete_btn"], hover_color=c["delete_hover"],
-                font=ctk.CTkFont("Segoe UI", 10, "bold"),
-                text_color=c["text"],
-                command=lambda n=name: self._delete_preset(n)
-            ).pack(side="right", padx=(0, 2))
+        ctk.CTkLabel(info,
+            text=f"{dns.get('primary','—')}  /  {dns.get('secondary','—')}",
+            font=ctk.CTkFont("Consolas", 11),
+            text_color=c["muted"], anchor="w").pack(anchor="w")
 
-            # Click to select
-            for w in [row, info, dot] + list(info.winfo_children()):
-                w.bind("<Button-1>", lambda e, n=name: self._select_preset(n))
+        # Right-side buttons
+        btn_frame = ctk.CTkFrame(row, fg_color="transparent")
+        btn_frame.pack(side="right", padx=8)
 
-        # Ping All button below the list
-        self._build_ping_all_area()
+        # Ping result label
+        ping_lbl = ctk.CTkLabel(btn_frame, text="",
+            font=ctk.CTkFont("Segoe UI", 10, "bold"),
+            text_color=c["muted"], width=60, anchor="e")
+        ping_lbl.pack(side="left", padx=(0, 4))
+        self.ping_labels[name] = ping_lbl
 
-    def _build_ping_all_area(self):
-        """Add a Ping All button + a 'best result' label below the preset list, inside the card."""
-        c = self.colors
-        bottom = ctk.CTkFrame(self.presets_outer, fg_color="transparent")
-        bottom.pack(fill="x", padx=8, pady=(0, 6))
+        # Ping button
+        ping_btn = ctk.CTkButton(btn_frame, text="Ping",
+            width=44, height=28, corner_radius=6,
+            fg_color=c["ping_blue"], hover_color=c["accent_hover"],
+            font=ctk.CTkFont("Segoe UI", 11, "bold"), text_color="white",
+            command=lambda n=name: self._ping_preset(n))
+        ping_btn.pack(side="left", padx=(0, 4))
+        self.ping_buttons[name] = ping_btn
 
-        self.ping_all_btn = ctk.CTkButton(bottom, text="Ping All", height=26,
+        # Delete button
+        ctk.CTkButton(btn_frame, text="✕",
+            width=28, height=28, corner_radius=6,
+            fg_color=c["delete_btn"], hover_color=c["delete_hover"],
             font=ctk.CTkFont("Segoe UI", 11, "bold"),
-            fg_color=c["ping_good"], hover_color=c["accent_hover"],
-            text_color="white", corner_radius=5,
-            command=self._ping_all)
-        self.ping_all_btn.pack(side="left", padx=(0, 8))
+            text_color=c["danger"],
+            command=lambda n=name: self._delete_preset(n)
+        ).pack(side="left")
 
-        self.ping_summary_lbl = ctk.CTkLabel(bottom, text="",
+        # Click row to select
+        for w in [row, info, dot] + list(info.winfo_children()):
+            w.bind("<Button-1>", lambda e, n=name: self._select_preset(n))
+
+    def _add_ping_all_row(self, parent):
+        c = self.colors
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", padx=10, pady=(2, 10))
+
+        self.ping_all_btn = ctk.CTkButton(row, text="Ping All",
+            width=100, height=28, corner_radius=6,
+            fg_color=c["ping_blue"], hover_color=c["accent_hover"],
+            font=ctk.CTkFont("Segoe UI", 11, "bold"), text_color="white",
+            command=self._ping_all)
+        self.ping_all_btn.pack(side="left")
+
+        self.ping_summary_lbl = ctk.CTkLabel(row, text="",
             font=ctk.CTkFont("Segoe UI", 10),
             text_color=c["muted"], anchor="w")
-        self.ping_summary_lbl.pack(side="left", fill="x", expand=True)
+        self.ping_summary_lbl.pack(side="left", padx=(10, 0))
 
     def _select_preset(self, name):
         self.selected_preset = name
         self._build_preset_list()
 
-    # ======================== PING ACTIONS ========================
+    # ======================== PING ========================
 
     def _ping_preset(self, name):
-        """Ping a single preset's primary DNS and show the result."""
-        dns = self.presets.get(name, {})
+        dns     = self.presets.get(name, {})
         primary = dns.get("primary", "")
         if not primary:
             return
-
-        # Show "pinging..." state
         if name in self.ping_buttons:
             self.ping_buttons[name].configure(text="...", state="disabled")
         if name in self.ping_labels:
-            self.ping_labels[name].configure(text="pinging...", text_color=self.colors["muted"])
+            self.ping_labels[name].configure(text="", text_color=self.colors["muted"])
 
         def worker():
-            avg, mn, loss = ping_dns(primary, count=3, timeout=2000)
-            self.after(0, lambda: self._show_ping_result(name, avg, mn, loss))
+            ms = ping_dns(primary)
+            self.after(0, lambda: self._show_ping_result(name, ms))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _show_ping_result(self, name, avg, mn, loss):
+    def _show_ping_result(self, name, ms):
         c = self.colors
-        btn = self.ping_buttons.get(name)
-        lbl = self.ping_labels.get(name)
-
-        if btn:
-            btn.configure(text="Ping", state="normal")
-
-        if avg is None or loss >= 100:
-            if lbl:
-                lbl.configure(text="timeout", text_color=c["ping_fail"])
-        else:
-            # Color code by latency
-            if avg < 30:
-                color = c["ping_ok"]    # green = excellent
-            elif avg < 80:
-                color = c["ping_good"]   # blue = good
-            elif avg < 150:
-                color = c["ping_bad"]    # orange = slow
-            else:
-                color = c["ping_fail"]   # red = very slow
-
-            loss_str = f" ({loss:.0f}% loss)" if loss > 0 else ""
-            if lbl:
-                lbl.configure(text=f"{avg}ms{loss_str}", text_color=color)
+        if name in self.ping_buttons:
+            self.ping_buttons[name].configure(text="Ping", state="normal")
+        if name in self.ping_labels:
+            self.ping_labels[name].configure(
+                text=ping_text(ms),
+                text_color=ping_color(ms, c))
 
     def _ping_all(self):
-        """Ping all presets one by one, then show which is best."""
         if not self.presets:
             self._set_status("No presets to ping", danger=True)
             return
-
         names = list(self.presets.keys())
-        self.ping_all_btn.configure(text="Pinging...", state="disabled")
-        self.ping_summary_lbl.configure(text="Pinging all presets...", text_color=self.colors["muted"])
 
-        # Disable all individual ping buttons
+        self.ping_all_btn.configure(text="Pinging...", state="disabled")
+        self.ping_summary_lbl.configure(text="", text_color=self.colors["muted"])
+
         for n in names:
             if n in self.ping_buttons:
                 self.ping_buttons[n].configure(text="...", state="disabled")
@@ -639,38 +718,26 @@ class DNSChangerApp(ctk.CTk):
         def worker():
             results = {}
             for name in names:
-                dns = self.presets.get(name, {})
-                primary = dns.get("primary", "")
-                if primary:
-                    avg, mn, loss = ping_dns(primary, count=3, timeout=2000)
-                    results[name] = (avg, mn, loss)
-                    self.after(0, lambda n=name, a=avg, m=mn, l=loss: self._show_ping_result(n, a, m, l))
-                else:
-                    results[name] = (None, None, 100)
-                    self.after(0, lambda n=name: self._show_ping_result(n, None, None, 100))
+                primary = self.presets.get(name, {}).get("primary", "")
+                ms = ping_dns(primary) if primary else -1
+                results[name] = ms
+                self.after(0, lambda n=name, m=ms: self._show_ping_result(n, m))
 
-            # Find best
-            best_name = None
-            best_avg  = float('inf')
-            for name, (avg, mn, loss) in results.items():
-                if avg is not None and avg < best_avg:
-                    best_avg = avg
-                    best_name = name
-
-            def update_summary():
+            # Find best (lowest non-negative)
+            valid   = {n: ms for n, ms in results.items() if ms >= 0}
+            def done():
                 self.ping_all_btn.configure(text="Ping All", state="normal")
-                if best_name:
+                if valid:
+                    best = min(valid, key=valid.get)
                     self.ping_summary_lbl.configure(
-                        text=f"Best: {best_name} ({best_avg}ms)",
+                        text=f"Best: {best} ({valid[best]}ms)",
                         text_color=self.colors["success"])
-                    self._set_status(f"Best DNS: {best_name} at {best_avg}ms", success=True)
+                    self._set_status(f"Best DNS: {best} at {valid[best]}ms", success=True)
                 else:
                     self.ping_summary_lbl.configure(
-                        text="All presets timed out",
-                        text_color=self.colors["danger"])
+                        text="All timed out", text_color=self.colors["danger"])
                     self._set_status("All presets timed out", danger=True)
-
-            self.after(0, update_summary)
+            self.after(0, done)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -685,9 +752,10 @@ class DNSChangerApp(ctk.CTk):
                 self._set_status(self.t("no_presets_warning"), danger=True)
                 return
         name = self.selected_preset
-        dns  = self.presets.get(name, {})
         self._set_status(self.t("applying", name=name))
-        threading.Thread(target=lambda: self._do_apply(name, dns), daemon=True).start()
+        threading.Thread(
+            target=lambda: self._do_apply(name, self.presets.get(name, {})),
+            daemon=True).start()
 
     def _do_apply(self, name, dns):
         set_dns(dns.get("primary", ""), dns.get("secondary", ""), self.adapter_var.get())
@@ -741,7 +809,7 @@ class DNSChangerApp(ctk.CTk):
         adapters = get_adapters()
         try:
             cf = 0x08000000 if sys.platform == 'win32' else 0
-            r = subprocess.run('netsh wlan show interfaces',
+            r  = subprocess.run('netsh wlan show interfaces',
                 shell=True, capture_output=True, text=True, timeout=10, creationflags=cf)
             for line in r.stdout.split('\n'):
                 if 'Name' in line and ':' in line:
@@ -782,14 +850,14 @@ class DNSChangerApp(ctk.CTk):
             scrollbar_button_color=c["accent"])
         scroll.pack(fill="both", expand=True)
 
-        def section(parent, label):
-            ctk.CTkLabel(parent, text=label,
+        def section(label):
+            ctk.CTkLabel(scroll, text=label,
                 font=ctk.CTkFont("Segoe UI", 12, "bold"),
                 text_color=c["accent_light"]
             ).pack(anchor="w", padx=18, pady=(8, 3))
 
-        def seg(parent, values, current, cmd):
-            s = ctk.CTkSegmentedButton(parent, values=values, command=cmd,
+        def seg(values, current, cmd):
+            s = ctk.CTkSegmentedButton(scroll, values=values, command=cmd,
                 fg_color=c["card2"], selected_color=c["accent"],
                 selected_hover_color=c["accent_hover"],
                 unselected_color=c["card2"],
@@ -801,19 +869,19 @@ class DNSChangerApp(ctk.CTk):
             return s
 
         # Theme
-        section(scroll, self.t("appearance"))
-        seg(scroll, [self.t("dark_mode"), self.t("light_mode")],
+        section(self.t("appearance"))
+        seg([self.t("dark_mode"), self.t("light_mode")],
             self.t("dark_mode") if self.settings["theme"] == "dark" else self.t("light_mode"),
             lambda v: self._change_theme("dark" if v == self.t("dark_mode") else "light", win))
 
         # Language
-        section(scroll, self.t("language_section"))
-        seg(scroll, [self.t("english"), self.t("persian")],
+        section(self.t("language_section"))
+        seg([self.t("english"), self.t("persian")],
             self.t("english") if self.lang == "en" else self.t("persian"),
             lambda v: self._change_language("en" if v == self.t("english") else "fa", win))
 
         # Hotkey
-        section(scroll, self.t("hotkey"))
+        section(self.t("hotkey"))
         ctk.CTkLabel(scroll, text=self.t("hotkey_desc"),
             font=ctk.CTkFont("Segoe UI", 11),
             text_color=c["muted"], wraplength=400, justify="left"
@@ -853,8 +921,8 @@ class DNSChangerApp(ctk.CTk):
                 command=lambda k=key: (hk_entry.delete(0, "end"), hk_entry.insert(0, k))
             ).pack(side="left", padx=1, pady=2)
 
-        # Toggle Presets A / B
-        section(scroll, "Toggle Presets (A / B)")
+        # Toggle A/B
+        section("Toggle Presets (A / B)")
         ctk.CTkLabel(scroll,
             text="Pressing the hotkey switches between Preset A and B.",
             font=ctk.CTkFont("Segoe UI", 11),
@@ -862,18 +930,14 @@ class DNSChangerApp(ctk.CTk):
         ).pack(anchor="w", padx=18, pady=(0, 4))
 
         preset_names = list(self.presets.keys()) or ["(no presets)"]
-
         ab_frame = ctk.CTkFrame(scroll, fg_color="transparent")
         ab_frame.pack(fill="x", padx=18, pady=(0, 4))
 
         ctk.CTkLabel(ab_frame, text="A", width=18,
             font=ctk.CTkFont("Segoe UI", 12, "bold"),
             text_color=c["text"]).pack(side="left", padx=(0, 3))
-
-        self.hk_a_var = ctk.StringVar()
-        self.hk_a_var.set(self.settings.get("preset_a", "") or preset_names[0])
-        ctk.CTkOptionMenu(ab_frame, variable=self.hk_a_var,
-            values=preset_names,
+        self.hk_a_var = ctk.StringVar(value=self.settings.get("preset_a", "") or preset_names[0])
+        ctk.CTkOptionMenu(ab_frame, variable=self.hk_a_var, values=preset_names,
             fg_color=c["accent"], button_color=c["accent"],
             button_hover_color=c["accent_hover"], text_color="white",
             dropdown_fg_color=c["card"], dropdown_text_color=c["text"],
@@ -884,14 +948,11 @@ class DNSChangerApp(ctk.CTk):
         ctk.CTkLabel(ab_frame, text="B", width=18,
             font=ctk.CTkFont("Segoe UI", 12, "bold"),
             text_color=c["text"]).pack(side="left", padx=(0, 3))
-
-        self.hk_b_var = ctk.StringVar()
         b_def = self.settings.get("preset_b", "")
         if not b_def and len(preset_names) > 1:
             b_def = preset_names[1]
-        self.hk_b_var.set(b_def or preset_names[0])
-        ctk.CTkOptionMenu(ab_frame, variable=self.hk_b_var,
-            values=preset_names,
+        self.hk_b_var = ctk.StringVar(value=b_def or preset_names[0])
+        ctk.CTkOptionMenu(ab_frame, variable=self.hk_b_var, values=preset_names,
             fg_color=c["accent"], button_color=c["accent"],
             button_hover_color=c["accent_hover"], text_color="white",
             dropdown_fg_color=c["card"], dropdown_text_color=c["text"],
@@ -914,15 +975,15 @@ class DNSChangerApp(ctk.CTk):
         ).pack(fill="x", padx=18, pady=(0, 6))
 
         # Tray
-        section(scroll, self.t("tray_section"))
+        section(self.t("tray_section"))
         tray_var = ctk.StringVar(value="On" if self.settings.get("minimize_to_tray", True) else "Off")
         def _tray_toggle(v):
             self.settings["minimize_to_tray"] = (v == "On")
             save_json(SETTINGS_FILE, self.settings)
-        seg(scroll, ["On", "Off"], tray_var.get(), _tray_toggle)
+        seg(["On", "Off"], tray_var.get(), _tray_toggle)
 
         # About
-        section(scroll, self.t("about_section"))
+        section(self.t("about_section"))
         ctk.CTkLabel(scroll, text=self.t("about_text"),
             font=ctk.CTkFont("Segoe UI", 11),
             text_color=c["muted"], justify="center").pack(padx=18, pady=(0, 8))
@@ -939,7 +1000,7 @@ class DNSChangerApp(ctk.CTk):
         ctk.set_appearance_mode(theme)
         self.configure(fg_color=self.colors["bg"])
         self._build_ui()
-        self.after(120, lambda: apply_windows11_effects(get_hwnd(self), dark=(theme == "dark")))
+        self.after(150, lambda: apply_windows11_effects(get_hwnd(self), dark=(theme == "dark")))
         if win and win.winfo_exists():
             win.destroy()
             self._open_settings()
@@ -988,7 +1049,7 @@ class DNSChangerApp(ctk.CTk):
         c = self.colors
         win = ctk.CTkToplevel(self)
         win.title(self.t("admin_needed"))
-        win.geometry("360x160")
+        win.geometry("360x165")
         win.configure(fg_color=c["bg"])
         win.resizable(False, False)
         win.attributes("-topmost", True)
@@ -999,11 +1060,11 @@ class DNSChangerApp(ctk.CTk):
             text_color=c["accent_light"]).pack(pady=(20, 4))
         ctk.CTkLabel(win, text=self.t("admin_msg"),
             font=ctk.CTkFont("Segoe UI", 11),
-            text_color=c["muted"], justify="center").pack(pady=(0, 12))
-        ctk.CTkButton(win, text=self.t("restart_admin"), width=150, height=32,
+            text_color=c["muted"], justify="center").pack(pady=(0, 14))
+        ctk.CTkButton(win, text=self.t("restart_admin"), width=160, height=34,
             font=ctk.CTkFont("Segoe UI", 12, "bold"),
             fg_color=c["accent"], hover_color=c["accent_hover"],
-            corner_radius=6, command=self._restart_as_admin).pack()
+            corner_radius=7, command=self._restart_as_admin).pack()
 
     def _restart_as_admin(self):
         try:
@@ -1018,5 +1079,10 @@ class DNSChangerApp(ctk.CTk):
 # ======================== ENTRY ========================
 
 if __name__ == "__main__":
+    # Enable HiDPI on Windows
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        pass
     app = DNSChangerApp()
     app.mainloop()

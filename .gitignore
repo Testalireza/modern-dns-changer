@@ -1,6 +1,31 @@
-.agents/.env
+# DNS Changer
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+build/
+dist/
+*.egg-info/
+
+# Generated files (user-specific)
+presets.json
+settings.json
+hotkey_config.json
+icon.ico
+icon.png
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+desktop.ini
+
+# Base44 agent workspace (not part of the app)
+.agents/
 node_modules/
 .npm/
-__pycache__/
 .cache/
 blobs/
+.agents/.env

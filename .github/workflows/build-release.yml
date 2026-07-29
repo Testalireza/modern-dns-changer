@@ -23,29 +23,26 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        working-directory: dns_changer
         run: |
           pip install customtkinter keyboard pyinstaller pillow pystray
 
       - name: Generate icon
-        working-directory: dns_changer
         run: python generate_icon.py
 
       - name: Build executable
-        working-directory: dns_changer
         run: pyinstaller build.spec --clean --noconfirm
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ModernDNSChanger
-          path: dns_changer/dist/ModernDNSChanger.exe
+          path: dist/ModernDNSChanger.exe
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dns_changer/dist/ModernDNSChanger.exe
+          files: dist/ModernDNSChanger.exe
           name: Modern DNS Changer ${{ github.ref_name }}
           body: |
             ## Modern DNS Changer ${{ github.ref_name }}

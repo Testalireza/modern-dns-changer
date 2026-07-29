@@ -83,20 +83,17 @@ def apply_windows11_effects(hwnd, dark=True):
         return
     try:
         dwm = ctypes.WinDLL("dwmapi.dll")
-        # Mica
         try:
             dwm.DwmSetWindowAttribute(ctypes.c_void_p(hwnd), ctypes.c_int(38),
                 ctypes.byref(ctypes.c_int(2)), ctypes.c_int(4))
         except Exception:
             pass
-        # Dark title bar
         for attr in (20, 19):
             try:
                 dwm.DwmSetWindowAttribute(ctypes.c_void_p(hwnd), ctypes.c_int(attr),
                     ctypes.byref(ctypes.c_int(1 if dark else 0)), ctypes.c_int(4))
             except Exception:
                 pass
-        # Rounded corners
         try:
             dwm.DwmSetWindowAttribute(ctypes.c_void_p(hwnd), ctypes.c_int(33),
                 ctypes.byref(ctypes.c_int(2)), ctypes.c_int(4))
@@ -216,13 +213,13 @@ class DNSChangerApp(ctk.CTk):
         self.colors = THEMES[self.settings["theme"]]
         self.lang   = self.settings["language"]
         self.toggle_state = 0
-        self.selected_preset = None   # name of selected preset
+        self.selected_preset = None
 
         ctk.set_appearance_mode(self.settings["theme"])
 
         self.title(self.t("title"))
-        self.geometry("560x700")
-        self.minsize(520, 620)
+        self.geometry("900x680")
+        self.minsize(700, 600)
         self.configure(fg_color=self.colors["bg"])
         self.resizable(True, True)
 
@@ -259,31 +256,38 @@ class DNSChangerApp(ctk.CTk):
         self._clear()
         c = self.colors
 
+        # ---- MAIN SCROLLABLE CONTAINER ----
+        # Everything goes in one scrollable frame so nothing gets cut off
+        scroll = ctk.CTkScrollableFrame(self, fg_color="transparent",
+            scrollbar_button_color=c["accent"],
+            scrollbar_button_hover_color=c["accent_hover"])
+        scroll.pack(fill="both", expand=True, padx=0, pady=0)
+
         # ---- HEADER ----
-        hdr = ctk.CTkFrame(self, fg_color="transparent")
-        hdr.pack(fill="x", padx=24, pady=(20, 8))
+        hdr = ctk.CTkFrame(scroll, fg_color="transparent")
+        hdr.pack(fill="x", padx=30, pady=(20, 8))
 
         ctk.CTkLabel(hdr, text=self.t("title"),
-            font=ctk.CTkFont("Segoe UI", 22, "bold"),
+            font=ctk.CTkFont("Segoe UI", 24, "bold"),
             text_color=c["text"]).pack(side="left")
 
         ctk.CTkButton(hdr, text="⚙  " + self.t("settings_btn"),
-            width=110, height=30,
+            width=110, height=32,
             font=ctk.CTkFont("Segoe UI", 12, "bold"),
             fg_color=c["accent"], hover_color=c["accent_hover"],
             corner_radius=8, command=self._open_settings
         ).pack(side="right")
 
-        ctk.CTkLabel(self, text=self.t("subtitle"),
-            font=ctk.CTkFont("Segoe UI", 12),
+        ctk.CTkLabel(scroll, text=self.t("subtitle"),
+            font=ctk.CTkFont("Segoe UI", 13),
             text_color=c["muted"]
-        ).pack(anchor="w", padx=24, pady=(0, 14))
+        ).pack(anchor="w", padx=30, pady=(0, 16))
 
         # ---- ADAPTER ----
-        self._section(self.t("adapter"))
+        self._section(scroll, self.t("adapter"))
 
-        af = ctk.CTkFrame(self, fg_color=c["card"], corner_radius=10)
-        af.pack(fill="x", padx=24, pady=(0, 14))
+        af = ctk.CTkFrame(scroll, fg_color=c["card"], corner_radius=10)
+        af.pack(fill="x", padx=30, pady=(0, 14))
 
         self.adapter_var = ctk.StringVar(value=DEFAULT_ADAPTER)
         self.adapter_menu = ctk.CTkOptionMenu(
@@ -294,32 +298,32 @@ class DNSChangerApp(ctk.CTk):
             text_color="white",
             dropdown_fg_color=c["card"], dropdown_text_color=c["text"],
             dropdown_hover_color=c["accent"],
-            corner_radius=8, height=36,
+            corner_radius=8, height=38,
             font=ctk.CTkFont("Segoe UI", 13)
         )
-        self.adapter_menu.pack(fill="x", padx=14, pady=12)
+        self.adapter_menu.pack(fill="x", padx=16, pady=14)
         threading.Thread(target=self._load_adapters, daemon=True).start()
 
         # ---- QUICK ACTIONS ----
-        self._section(self.t("quick_actions"))
+        self._section(scroll, self.t("quick_actions"))
 
-        qf = ctk.CTkFrame(self, fg_color=c["card"], corner_radius=10)
-        qf.pack(fill="x", padx=24, pady=(0, 14))
+        qf = ctk.CTkFrame(scroll, fg_color=c["card"], corner_radius=10)
+        qf.pack(fill="x", padx=30, pady=(0, 14))
 
         br = ctk.CTkFrame(qf, fg_color="transparent")
-        br.pack(fill="x", padx=14, pady=(12, 0))
+        br.pack(fill="x", padx=16, pady=(14, 0))
 
         self.apply_btn = ctk.CTkButton(
-            br, text="⚡  " + self.t("apply_dns"), height=38,
-            font=ctk.CTkFont("Segoe UI", 13, "bold"),
+            br, text="⚡  " + self.t("apply_dns"), height=42,
+            font=ctk.CTkFont("Segoe UI", 14, "bold"),
             fg_color=c["accent"], hover_color=c["accent_hover"],
             corner_radius=8, command=self._apply_selected
         )
         self.apply_btn.pack(side="left", fill="x", expand=True, padx=(0, 8))
 
         ctk.CTkButton(
-            br, text=self.t("auto_dhcp"), height=38,
-            font=ctk.CTkFont("Segoe UI", 13, "bold"),
+            br, text=self.t("auto_dhcp"), height=42,
+            font=ctk.CTkFont("Segoe UI", 14, "bold"),
             fg_color=c["secondary_btn"], hover_color=c["secondary_hover"],
             text_color=c["text"],
             corner_radius=8, command=self._set_dhcp
@@ -327,113 +331,130 @@ class DNSChangerApp(ctk.CTk):
 
         self.status_lbl = ctk.CTkLabel(
             qf, text="● " + self.t("status_ready"),
-            font=ctk.CTkFont("Segoe UI", 11),
+            font=ctk.CTkFont("Segoe UI", 12),
             text_color=c["muted"]
         )
-        self.status_lbl.pack(anchor="w", padx=14, pady=(6, 10))
+        self.status_lbl.pack(anchor="w", padx=16, pady=(8, 12))
 
         # ---- PRESETS ----
-        self._section(self.t("presets"))
+        self._section(scroll, self.t("presets"))
 
-        self.presets_outer = ctk.CTkFrame(self, fg_color=c["card"], corner_radius=10)
-        self.presets_outer.pack(fill="both", expand=True, padx=24, pady=(0, 14))
+        self.presets_outer = ctk.CTkFrame(scroll, fg_color=c["card"], corner_radius=10)
+        # Fixed height — not expand=True — so Add Preset below is always visible
+        self.presets_outer.pack(fill="x", padx=30, pady=(0, 14))
 
         self.presets_scroll = ctk.CTkScrollableFrame(
             self.presets_outer, fg_color="transparent",
             scrollbar_button_color=c["accent"],
             scrollbar_button_hover_color=c["accent_hover"],
+            height=180,
         )
-        self.presets_scroll.pack(fill="both", expand=True, padx=10, pady=10)
+        self.presets_scroll.pack(fill="x", padx=12, pady=12)
         self._build_preset_list()
 
         # ---- ADD PRESET ----
-        self._section(self.t("add_new_preset"))
+        self._section(scroll, self.t("add_new_preset"))
 
-        af2 = ctk.CTkFrame(self, fg_color=c["card"], corner_radius=10)
-        af2.pack(fill="x", padx=24, pady=(0, 14))
+        af2 = ctk.CTkFrame(scroll, fg_color=c["card"], corner_radius=10)
+        af2.pack(fill="x", padx=30, pady=(0, 14))
 
-        self.name_entry = self._entry(af2, self.t("preset_name"))
-        self.primary_entry = self._entry(af2, self.t("preferred_dns"))
-        self.secondary_entry = self._entry(af2, self.t("secondary_dns"))
+        # Two-column layout for inputs
+        row1 = ctk.CTkFrame(af2, fg_color="transparent")
+        row1.pack(fill="x", padx=16, pady=(14, 6))
 
-        ctk.CTkButton(
-            af2, text="+ " + self.t("add_preset_btn"), height=36,
-            font=ctk.CTkFont("Segoe UI", 13, "bold"),
+        self.name_entry = ctk.CTkEntry(row1, placeholder_text=self.t("preset_name"),
+            height=38, corner_radius=8,
+            fg_color=c["entry"], text_color=c["text"],
+            placeholder_text_color=c["muted"],
+            border_color=c["border"], border_width=1,
+            font=ctk.CTkFont("Segoe UI", 13))
+        self.name_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        self.primary_entry = ctk.CTkEntry(row1, placeholder_text=self.t("preferred_dns"),
+            height=38, corner_radius=8,
+            fg_color=c["entry"], text_color=c["text"],
+            placeholder_text_color=c["muted"],
+            border_color=c["border"], border_width=1,
+            font=ctk.CTkFont("Segoe UI", 13))
+        self.primary_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        self.secondary_entry = ctk.CTkEntry(row1, placeholder_text=self.t("secondary_dns"),
+            height=38, corner_radius=8,
+            fg_color=c["entry"], text_color=c["text"],
+            placeholder_text_color=c["muted"],
+            border_color=c["border"], border_width=1,
+            font=ctk.CTkFont("Segoe UI", 13))
+        self.secondary_entry.pack(side="left", fill="x", expand=True)
+
+        # Save preset button — big, prominent
+        self.add_btn = ctk.CTkButton(
+            af2, text="＋  " + self.t("add_preset_btn"), height=42,
+            font=ctk.CTkFont("Segoe UI", 14, "bold"),
             fg_color=c["accent"], hover_color=c["accent_hover"],
             corner_radius=8, command=self._add_preset
-        ).pack(fill="x", padx=14, pady=(4, 12))
+        )
+        self.add_btn.pack(fill="x", padx=16, pady=(4, 16))
 
         # ---- HOTKEY ----
-        self._section(self.t("hotkey"))
+        self._section(scroll, self.t("hotkey"))
 
-        hkf = ctk.CTkFrame(self, fg_color=c["card"], corner_radius=10)
-        hkf.pack(fill="x", padx=24, pady=(0, 20))
+        hkf = ctk.CTkFrame(scroll, fg_color=c["card"], corner_radius=10)
+        hkf.pack(fill="x", padx=30, pady=(0, 24))
 
         ctk.CTkLabel(hkf, text=self.t("hotkey_desc"),
-            font=ctk.CTkFont("Segoe UI", 11),
+            font=ctk.CTkFont("Segoe UI", 12),
             text_color=c["muted"]
-        ).pack(anchor="w", padx=14, pady=(10, 6))
+        ).pack(anchor="w", padx=16, pady=(12, 8))
 
         hkrow = ctk.CTkFrame(hkf, fg_color="transparent")
-        hkrow.pack(fill="x", padx=14, pady=(0, 6))
+        hkrow.pack(fill="x", padx=16, pady=(0, 8))
 
-        ctk.CTkLabel(hkrow, text="A:", width=20, text_color=c["muted"],
-                     font=ctk.CTkFont("Segoe UI", 12)).pack(side="left", padx=(0,4))
+        ctk.CTkLabel(hkrow, text="A:", width=24, text_color=c["muted"],
+                     font=ctk.CTkFont("Segoe UI", 13)).pack(side="left", padx=(0,4))
         self.hk_a_var = ctk.StringVar()
         self.hk_a_menu = ctk.CTkOptionMenu(hkrow, values=[], variable=self.hk_a_var,
             fg_color=c["accent"], button_color=c["accent"],
             button_hover_color=c["accent_hover"], text_color="white",
             dropdown_fg_color=c["card"], dropdown_text_color=c["text"],
             dropdown_hover_color=c["accent"],
-            corner_radius=8, height=32, font=ctk.CTkFont("Segoe UI", 12))
-        self.hk_a_menu.pack(side="left", fill="x", expand=True, padx=(0, 10))
+            corner_radius=8, height=36, font=ctk.CTkFont("Segoe UI", 13))
+        self.hk_a_menu.pack(side="left", fill="x", expand=True, padx=(0, 12))
 
-        ctk.CTkLabel(hkrow, text="B:", width=20, text_color=c["muted"],
-                     font=ctk.CTkFont("Segoe UI", 12)).pack(side="left", padx=(0,4))
+        ctk.CTkLabel(hkrow, text="B:", width=24, text_color=c["muted"],
+                     font=ctk.CTkFont("Segoe UI", 13)).pack(side="left", padx=(0,4))
         self.hk_b_var = ctk.StringVar()
         self.hk_b_menu = ctk.CTkOptionMenu(hkrow, values=[], variable=self.hk_b_var,
             fg_color=c["accent"], button_color=c["accent"],
             button_hover_color=c["accent_hover"], text_color="white",
             dropdown_fg_color=c["card"], dropdown_text_color=c["text"],
             dropdown_hover_color=c["accent"],
-            corner_radius=8, height=32, font=ctk.CTkFont("Segoe UI", 12))
+            corner_radius=8, height=36, font=ctk.CTkFont("Segoe UI", 13))
         self.hk_b_menu.pack(side="left", fill="x", expand=True)
 
         hkrow2 = ctk.CTkFrame(hkf, fg_color="transparent")
-        hkrow2.pack(fill="x", padx=14, pady=(0, 12))
+        hkrow2.pack(fill="x", padx=16, pady=(0, 14))
 
-        self.hotkey_entry = ctk.CTkEntry(hkrow2, height=32, corner_radius=8,
+        self.hotkey_entry = ctk.CTkEntry(hkrow2, height=36, corner_radius=8,
             fg_color=c["entry"], text_color=c["text"],
             border_color=c["accent"], border_width=1,
-            font=ctk.CTkFont("Segoe UI", 12))
+            font=ctk.CTkFont("Segoe UI", 13))
         self.hotkey_entry.insert(0, self.settings.get("hotkey", "ctrl+shift+d"))
-        self.hotkey_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.hotkey_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
 
-        ctk.CTkButton(hkrow2, text=self.t("save_hotkey"), width=100, height=32,
-            font=ctk.CTkFont("Segoe UI", 12, "bold"),
+        ctk.CTkButton(hkrow2, text=self.t("save_hotkey"), width=120, height=36,
+            font=ctk.CTkFont("Segoe UI", 13, "bold"),
             fg_color=c["accent"], hover_color=c["accent_hover"],
             corner_radius=8, command=self._save_hotkey
         ).pack(side="left")
 
         self._refresh_hk_dropdowns()
 
-    def _section(self, label):
+    def _section(self, parent, label):
         c = self.colors
-        ctk.CTkLabel(self, text=label,
-            font=ctk.CTkFont("Segoe UI", 12, "bold"),
+        ctk.CTkLabel(parent, text=label,
+            font=ctk.CTkFont("Segoe UI", 13, "bold"),
             text_color=c["muted"]
-        ).pack(anchor="w", padx=24, pady=(0, 4))
-
-    def _entry(self, parent, placeholder):
-        c = self.colors
-        e = ctk.CTkEntry(parent, placeholder_text=placeholder,
-            height=34, corner_radius=8,
-            fg_color=c["entry"], text_color=c["text"],
-            placeholder_text_color=c["muted"],
-            border_color=c["border"], border_width=1,
-            font=ctk.CTkFont("Segoe UI", 12))
-        e.pack(fill="x", padx=14, pady=(0, 6))
-        return e
+        ).pack(anchor="w", padx=30, pady=(0, 6))
 
     # ======================== PRESET LIST (clickable selection) ========================
 
@@ -445,12 +466,11 @@ class DNSChangerApp(ctk.CTk):
         if not self.presets:
             ctk.CTkLabel(self.presets_scroll,
                 text=self.t("no_presets"),
-                font=ctk.CTkFont("Segoe UI", 12),
+                font=ctk.CTkFont("Segoe UI", 13),
                 text_color=c["muted"]
-            ).pack(pady=20)
+            ).pack(pady=30)
             return
 
-        # Validate selected preset still exists
         if self.selected_preset not in self.presets:
             self.selected_preset = None
 
@@ -465,37 +485,32 @@ class DNSChangerApp(ctk.CTk):
                 border_width=1, border_color=border)
             row.pack(fill="x", pady=3)
 
-            # Radio dot
-            dot_color = c["accent"] if is_sel else c["border"]
             dot = ctk.CTkLabel(row, text="●" if is_sel else "○",
-                font=ctk.CTkFont("Segoe UI", 14),
-                text_color=dot_color, width=28)
-            dot.pack(side="left", padx=(10, 0))
+                font=ctk.CTkFont("Segoe UI", 16),
+                text_color=c["accent"] if is_sel else c["border"], width=32)
+            dot.pack(side="left", padx=(12, 0))
 
-            # Info
             info = ctk.CTkFrame(row, fg_color="transparent")
-            info.pack(side="left", fill="x", expand=True, padx=8, pady=8)
+            info.pack(side="left", fill="x", expand=True, padx=8, pady=10)
 
             ctk.CTkLabel(info, text=name,
-                font=ctk.CTkFont("Segoe UI", 13, "bold"),
+                font=ctk.CTkFont("Segoe UI", 14, "bold"),
                 text_color=c["text"], anchor="w"
             ).pack(anchor="w")
 
             dns_str = f"{dns.get('primary','—')}   /   {dns.get('secondary','—')}"
             ctk.CTkLabel(info, text=dns_str,
-                font=ctk.CTkFont("Consolas", 11),
+                font=ctk.CTkFont("Consolas", 12),
                 text_color=c["muted"], anchor="w"
             ).pack(anchor="w")
 
-            # Delete btn
-            del_btn = ctk.CTkButton(row, text="🗑", width=30, height=30,
+            del_btn = ctk.CTkButton(row, text="🗑", width=34, height=34,
                 corner_radius=6,
                 fg_color=c["delete_btn"], hover_color=c["delete_hover"],
-                font=ctk.CTkFont("Segoe UI", 12),
+                font=ctk.CTkFont("Segoe UI", 13),
                 command=lambda n=name: self._delete_preset(n))
-            del_btn.pack(side="right", padx=10)
+            del_btn.pack(side="right", padx=12)
 
-            # Click anywhere on row to select
             for widget in [row, info, dot]:
                 widget.bind("<Button-1>", lambda e, n=name: self._select_preset(n))
             for child in info.winfo_children():
@@ -509,7 +524,6 @@ class DNSChangerApp(ctk.CTk):
 
     def _apply_selected(self):
         if not self.selected_preset:
-            # Try first preset
             if self.presets:
                 self.selected_preset = list(self.presets.keys())[0]
                 self._build_preset_list()
@@ -666,12 +680,16 @@ class DNSChangerApp(ctk.CTk):
         c = self.colors
         win = ctk.CTkToplevel(self)
         win.title(self.t("settings_title"))
-        win.geometry("420x520")
+        win.geometry("460x560")
         win.configure(fg_color=c["bg"])
         win.resizable(False, False)
         win.attributes("-topmost", True)
         win.transient(self)
         win.grab_set()
+
+        ctk.CTkLabel(win, text=self.t("settings_title"),
+            font=ctk.CTkFont("Segoe UI", 20, "bold"),
+            text_color=c["text"]).pack(pady=(20, 16))
 
         def seg(values, current, cmd):
             s = ctk.CTkSegmentedButton(win, values=values, command=cmd,
@@ -679,16 +697,16 @@ class DNSChangerApp(ctk.CTk):
                 selected_hover_color=c["accent_hover"],
                 unselected_color=c["card2"],
                 unselected_hover_color=c["secondary_hover"],
-                text_color="white", corner_radius=8, height=36,
-                font=ctk.CTkFont("Segoe UI", 12, "bold"))
+                text_color="white", corner_radius=8, height=38,
+                font=ctk.CTkFont("Segoe UI", 13, "bold"))
             s.set(current)
-            s.pack(fill="x", padx=20, pady=(0, 16))
+            s.pack(fill="x", padx=24, pady=(0, 16))
             return s
 
         # Theme
         ctk.CTkLabel(win, text=self.t("appearance"),
-            font=ctk.CTkFont("Segoe UI", 13, "bold"),
-            text_color=c["accent_light"]).pack(anchor="w", padx=20, pady=(20, 6))
+            font=ctk.CTkFont("Segoe UI", 14, "bold"),
+            text_color=c["accent_light"]).pack(anchor="w", padx=24, pady=(0, 8))
 
         seg([self.t("dark_mode"), self.t("light_mode")],
             self.t("dark_mode") if self.settings["theme"] == "dark" else self.t("light_mode"),
@@ -697,8 +715,8 @@ class DNSChangerApp(ctk.CTk):
 
         # Language
         ctk.CTkLabel(win, text=self.t("language_section"),
-            font=ctk.CTkFont("Segoe UI", 13, "bold"),
-            text_color=c["accent_light"]).pack(anchor="w", padx=20, pady=(0, 6))
+            font=ctk.CTkFont("Segoe UI", 14, "bold"),
+            text_color=c["accent_light"]).pack(anchor="w", padx=24, pady=(0, 8))
 
         seg([self.t("english"), self.t("persian")],
             self.t("english") if self.lang == "en" else self.t("persian"),
@@ -706,12 +724,12 @@ class DNSChangerApp(ctk.CTk):
 
         # Tray
         ctk.CTkLabel(win, text=self.t("tray_section"),
-            font=ctk.CTkFont("Segoe UI", 13, "bold"),
-            text_color=c["accent_light"]).pack(anchor="w", padx=20, pady=(0, 6))
+            font=ctk.CTkFont("Segoe UI", 14, "bold"),
+            text_color=c["accent_light"]).pack(anchor="w", padx=24, pady=(0, 8))
 
         ctk.CTkLabel(win, text=self.t("tray_desc"),
-            font=ctk.CTkFont("Segoe UI", 11),
-            text_color=c["muted"]).pack(anchor="w", padx=20, pady=(0, 6))
+            font=ctk.CTkFont("Segoe UI", 12),
+            text_color=c["muted"]).pack(anchor="w", padx=24, pady=(0, 8))
 
         tray_var = ctk.StringVar(value="On" if self.settings.get("minimize_to_tray", True) else "Off")
 
@@ -725,29 +743,29 @@ class DNSChangerApp(ctk.CTk):
             selected_hover_color=c["accent_hover"],
             unselected_color=c["card2"],
             unselected_hover_color=c["secondary_hover"],
-            text_color="white", corner_radius=8, height=36,
-            font=ctk.CTkFont("Segoe UI", 12, "bold"),
+            text_color="white", corner_radius=8, height=38,
+            font=ctk.CTkFont("Segoe UI", 13, "bold"),
             variable=tray_var)
-        ts.pack(fill="x", padx=20, pady=(0, 16))
+        ts.pack(fill="x", padx=24, pady=(0, 16))
 
         if not TRAY_AVAILABLE:
             ctk.CTkLabel(win, text="⚠ Install pystray for tray support",
-                font=ctk.CTkFont("Segoe UI", 11),
-                text_color=c["danger"]).pack(anchor="w", padx=20)
+                font=ctk.CTkFont("Segoe UI", 12),
+                text_color=c["danger"]).pack(anchor="w", padx=24)
 
         # About
         ctk.CTkLabel(win, text=self.t("about_section"),
-            font=ctk.CTkFont("Segoe UI", 13, "bold"),
-            text_color=c["accent_light"]).pack(anchor="w", padx=20, pady=(10, 6))
+            font=ctk.CTkFont("Segoe UI", 14, "bold"),
+            text_color=c["accent_light"]).pack(anchor="w", padx=24, pady=(10, 8))
 
         ctk.CTkLabel(win, text=self.t("about_text"),
-            font=ctk.CTkFont("Segoe UI", 11),
-            text_color=c["muted"], justify="center").pack(padx=20, pady=(0, 16))
+            font=ctk.CTkFont("Segoe UI", 12),
+            text_color=c["muted"], justify="center").pack(padx=24, pady=(0, 16))
 
-        ctk.CTkButton(win, text=self.t("close"), height=38, corner_radius=8,
-            font=ctk.CTkFont("Segoe UI", 13, "bold"),
+        ctk.CTkButton(win, text=self.t("close"), height=42, corner_radius=8,
+            font=ctk.CTkFont("Segoe UI", 14, "bold"),
             fg_color=c["accent"], hover_color=c["accent_hover"],
-            command=win.destroy).pack(fill="x", padx=20, pady=(0, 20))
+            command=win.destroy).pack(fill="x", padx=24, pady=(0, 24))
 
     def _change_theme(self, theme, win=None):
         self.settings["theme"] = theme
@@ -778,7 +796,6 @@ class DNSChangerApp(ctk.CTk):
             return
         try:
             img = create_tray_image(64)
-
             menu = pystray.Menu(
                 pystray.MenuItem(self.t("tray_show"),
                     lambda *_: self.after(0, self._restore_from_tray), default=True),
@@ -816,22 +833,22 @@ class DNSChangerApp(ctk.CTk):
         c = self.colors
         win = ctk.CTkToplevel(self)
         win.title(self.t("admin_needed"))
-        win.geometry("380x180")
+        win.geometry("400x200")
         win.configure(fg_color=c["bg"])
         win.resizable(False, False)
         win.attributes("-topmost", True)
         win.transient(self)
 
         ctk.CTkLabel(win, text=self.t("admin_needed"),
-            font=ctk.CTkFont("Segoe UI", 16, "bold"),
-            text_color=c["accent_light"]).pack(pady=(24, 6))
+            font=ctk.CTkFont("Segoe UI", 18, "bold"),
+            text_color=c["accent_light"]).pack(pady=(28, 8))
 
         ctk.CTkLabel(win, text=self.t("admin_msg"),
-            font=ctk.CTkFont("Segoe UI", 12),
-            text_color=c["muted"], justify="center").pack(pady=(0, 16))
+            font=ctk.CTkFont("Segoe UI", 13),
+            text_color=c["muted"], justify="center").pack(pady=(0, 18))
 
-        ctk.CTkButton(win, text=self.t("restart_admin"), width=160, height=36,
-            font=ctk.CTkFont("Segoe UI", 13, "bold"),
+        ctk.CTkButton(win, text=self.t("restart_admin"), width=180, height=40,
+            font=ctk.CTkFont("Segoe UI", 14, "bold"),
             fg_color=c["accent"], hover_color=c["accent_hover"],
             corner_radius=8, command=self._restart_as_admin).pack()
 

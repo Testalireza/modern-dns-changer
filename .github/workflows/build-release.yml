@@ -20,17 +20,29 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
 
-      - name: Install dependencies
+      - name: Install runtime dependencies
         run: |
-          pip install customtkinter pyinstaller pillow pystray
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
 
       - name: Generate icon
         run: python generate_icon.py
 
       - name: Build executable
         run: pyinstaller build.spec --clean --noconfirm
+
+      - name: Verify EXE
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist/ModernDNSChanger.exe")) {
+            Write-Error "dist/ModernDNSChanger.exe was not produced"
+            exit 1
+          }
+          $size = [math]::Round((Get-Item "dist/ModernDNSChanger.exe").Length / 1MB, 1)
+          Write-Host "EXE size: $size MB"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -46,26 +58,28 @@ jobs:
           name: Modern DNS Changer ${{ github.ref_name }}
           body: |
             ## Modern DNS Changer ${{ github.ref_name }}
-            
+
             ### Features
-            - One-click DNS switching for WiFi adapter (silent netsh)
+            - One-click DNS switching for any network adapter
             - Custom DNS presets (preferred + secondary), saved to JSON
             - Hotkey toggle between two presets (active when app is focused)
-            - Settings panel: hotkey config, A/B preset selection, theme, language, tray
+            - Settings panel: hotkey, A/B preset selection, theme, language, tray
             - System tray icon with minimize-to-tray
             - Dark & Light mode (auto-detects Windows theme on first launch)
             - English & Persian language support with RTL
             - Windows 11 native styling (Mica, dark title bar, rounded corners)
             - Auto-admin elevation on launch
-            - Compact layout — fits without scrolling
-            
+            - IPv4 + IPv6 DNS, with backup/restore of previous configuration
+            - In-app "Download Updated Repository" button
+
             ### Download
             Download `ModernDNSChanger.exe` below — no Python needed.
             Double-click to run (will prompt for admin access).
-            
+
             ### Note
-            Windows Defender may flag the .exe as `Wacatac.B!ml` — this is a false positive
-            from PyInstaller-built apps. The source code is fully open in this repo.
+            Windows Defender may flag the .exe as `Wacatac.B!ml` — this is a
+            false positive common to PyInstaller-built apps. The source code
+            is fully open in this repository.
           draft: false
           prerelease: false
         env:

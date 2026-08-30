@@ -683,10 +683,88 @@ class DNSChangerApp(ctk.CTk):
                 "Modern DNS Changer", f"Applied {name} to {adapter}",
             ))
         else:
-            self._safe_after(0, lambda: self._set_status(
-                f"{self.t('apply_failed')}: {result.message}", danger=True,
-            ))
+            self._safe_after(0, lambda: self._show_apply_failure(result))
         self._safe_after(0, lambda: setattr(self, "_busy", False))
+
+    def _show_apply_failure(self, result: DnsResult, prefix_key: str = "apply_failed") -> None:
+        """Render a DNS failure in the UI.
+
+        Verification failures carry structured details (see
+        :class:`dns_manager.DnsResult`), which are shown in a fully localised
+        diagnostic dialog instead of a raw one-line dump — users should never
+        see Python representations like ``IPv4=['...']``.
+        """
+        self._log.error("DNS operation failed: %s", result.message)
+        code = (result.details or {}).get("code")
+        if code == "verification_failed":
+            self._set_status(
+                f"{self.t('apply_failed')}: {self.t('verify_failed_short')}",
+                danger=True,
+            )
+            self._open_verify_failed_dialog(
+                result.details, self.t("verify_failed_title"),
+            )
+        elif code == "dhcp_verification_failed":
+            self._set_status(
+                f"{self.t('dhcp_failed')}: {self.t('dhcp_verify_failed')}",
+                danger=True,
+            )
+            self._open_verify_failed_dialog(
+                result.details, self.t("dhcp_verify_failed_title"),
+            )
+        else:
+            self._set_status(f"{self.t(prefix_key)}: {result.message}",
+                             danger=True)
+
+    def _open_verify_failed_dialog(self, details: dict, title: str) -> None:
+        """Show a localised, readable verification-failure diagnostic."""
+        if self._shutting_down:
+            return
+
+        def _fmt(servers) -> str:
+            items = [str(s) for s in (servers or []) if s]
+            return "\n".join(items) if items else self.t("verify_none")
+
+        c = self.colors
+        win = ctk.CTkToplevel(self)
+        win.title(title)
+        try:
+            win.geometry("480x440")
+        except tk.TclError:
+            pass
+        win.configure(fg_color=c["bg"])
+        win.resizable(False, False)
+        win.attributes("-topmost", True)
+        win.transient(self)
+        win.after(100, lambda: self._safe_grab_set(win))
+        win.protocol("WM_DELETE_WINDOW", win.destroy)
+
+        ctk.CTkLabel(
+            win, text=title,
+            font=ctk.CTkFont("Segoe UI", 15, "bold"),
+            text_color=c["danger"],
+        ).pack(pady=(16, 4))
+
+        body = self.t(
+            "verify_failed_detail",
+            adapter=details.get("adapter", ""),
+            expected_v4=_fmt(details.get("expected_ipv4")),
+            expected_v6=_fmt(details.get("expected_ipv6")),
+            detected_v4=_fmt(details.get("detected_ipv4")),
+            detected_v6=_fmt(details.get("detected_ipv6")),
+        )
+        ctk.CTkLabel(
+            win, text=body,
+            font=ctk.CTkFont("Consolas", 11),
+            text_color=c["text"], justify="left", wraplength=440,
+        ).pack(padx=18, anchor="w")
+
+        ctk.CTkButton(
+            win, text=self.t("close"), height=32, corner_radius=6,
+            font=ctk.CTkFont("Segoe UI", 12, "bold"),
+            fg_color=c["accent"], hover_color=c["accent_hover"],
+            command=win.destroy,
+        ).pack(fill="x", padx=18, pady=(10, 14))
 
     def _set_dhcp(self) -> None:
         if self._busy:
@@ -704,9 +782,9 @@ class DNSChangerApp(ctk.CTk):
                     self.t("dhcp_done", adapter=a), success=True,
                 ))
             else:
-                self._safe_after(0, lambda: self._set_status(
-                    f"{self.t('dhcp_failed')}: {result.message}", danger=True,
-                ))
+                self._safe_after(
+                    0, lambda r=result: self._show_apply_failure(r, prefix_key="dhcp_failed"),
+                )
             self._safe_after(0, lambda: setattr(self, "_busy", False))
 
         self._spawn_worker(worker)

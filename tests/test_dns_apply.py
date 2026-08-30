@@ -44,7 +44,7 @@ def _is_show_dns(args) -> bool:
         len(args) >= 4
         and "netsh" in args[0]
         and "show" in args
-        and "dns" in args
+        and ("dns" in args or "dnsservers" in args)
     )
 
 

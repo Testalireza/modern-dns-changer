@@ -36,9 +36,10 @@ from platform_utils import (
     is_windows,
     request_admin_elevation,
 )
+from presets import is_builtin_name, merge_user_presets
 from storage import (
-    load_presets,
     load_settings,
+    load_user_presets,
     save_presets,
     save_settings,
 )
@@ -132,8 +133,10 @@ class DNSChangerApp(ctk.CTk):
         self._worker_threads: list[threading.Thread] = []
         self._busy = False
 
-        # Load persisted data
-        self.presets: dict = load_presets(presets_path())
+        # Load persisted data.  User presets live on disk; built-in defaults
+        # are merged in at display time so they can never overwrite user data.
+        self.user_presets: dict = load_user_presets(presets_path())
+        self.presets: dict = merge_user_presets(self.user_presets)
         raw_settings = load_settings(settings_path())
         # Persist the (possibly migrated) settings immediately so the schema
         # upgrade survives a crash.
@@ -173,8 +176,9 @@ class DNSChangerApp(ctk.CTk):
         self.bind("<FocusIn>", lambda _e: self._bind_hotkey())
         self.bind("<FocusOut>", lambda _e: self._unbind_hotkey())
 
-        # Start tray (optional)
-        if self.settings.get("minimize_to_tray", True) and TRAY_AVAILABLE:
+        # Start tray when available.  TrayController.start() is idempotent, so
+        # closing/reopening or changing settings never creates a second icon.
+        if TRAY_AVAILABLE:
             self._create_tray()
 
         # Show admin warning if not elevated
@@ -494,13 +498,22 @@ class DNSChangerApp(ctk.CTk):
         ping_btn.pack(side="left", padx=(0, 4))
         self.ping_buttons[name] = ping_btn
 
-        ctk.CTkButton(
-            btn_frame, text="✕", width=28, height=28, corner_radius=6,
-            fg_color=c["delete_btn"], hover_color=c["delete_hover"],
-            font=ctk.CTkFont("Segoe UI", 11, "bold"),
-            text_color=c["danger"],
-            command=lambda n=name: self._delete_preset(n),
-        ).pack(side="left")
+        is_user = name in self.user_presets
+        if is_user:
+            ctk.CTkButton(
+                btn_frame, text="✕", width=28, height=28, corner_radius=6,
+                fg_color=c["delete_btn"], hover_color=c["delete_hover"],
+                font=ctk.CTkFont("Segoe UI", 11, "bold"),
+                text_color=c["danger"],
+                command=lambda n=name: self._delete_preset(n),
+            ).pack(side="left")
+        else:
+            # Built-in presets are read-only.
+            ctk.CTkLabel(
+                btn_frame, text=self.t("builtin_badge"),
+                font=ctk.CTkFont("Segoe UI", 10),
+                text_color=c["muted"], width=54, anchor="e",
+            ).pack(side="left")
 
         # Click row to select
         for w in [row, info, dot, *info.winfo_children()]:
@@ -725,8 +738,16 @@ class DNSChangerApp(ctk.CTk):
         if errs:
             self._set_status(errs[0], danger=True)
             return
-        self.presets[clean_name] = {"primary": p, "secondary": s}
-        save_presets(presets_path(), self.presets)
+        if is_builtin_name(clean_name) and clean_name not in self.user_presets:
+            # Built-in presets are read-only.  A legacy user preset with the
+            # same name is still editable/deletable (existing user data wins).
+            self._set_status(self.t("preset_builtin_readonly", name=clean_name), danger=True)
+            return
+        self.user_presets[clean_name] = {"primary": p, "secondary": s}
+        self.presets = merge_user_presets(self.user_presets)
+        if not save_presets(presets_path(), self.user_presets):
+            self._set_status(self.t("preset_save_failed"), danger=True)
+            return
         try:
             self.name_entry.delete(0, "end")
             self.primary_entry.delete(0, "end")
@@ -739,9 +760,17 @@ class DNSChangerApp(ctk.CTk):
         self._set_status(self.t("preset_saved", name=clean_name), success=True)
 
     def _delete_preset(self, name: str) -> None:
-        if name in self.presets:
-            del self.presets[name]
-            save_presets(presets_path(), self.presets)
+        is_builtin = is_builtin_name(name)
+        if is_builtin and name not in self.user_presets:
+            # This is a pure built-in entry — read-only.
+            self._set_status(self.t("preset_builtin_readonly", name=name), danger=True)
+            return
+        if name in self.user_presets:
+            del self.user_presets[name]
+            self.presets = merge_user_presets(self.user_presets)
+            if not save_presets(presets_path(), self.user_presets):
+                self._set_status(self.t("preset_save_failed"), danger=True)
+                return
             if self.selected_preset == name:
                 self.selected_preset = next(iter(self.presets), None)
             self._build_preset_list()
@@ -982,18 +1011,29 @@ class DNSChangerApp(ctk.CTk):
             corner_radius=6, command=save_ab,
         ).pack(fill="x", padx=18, pady=(0, 6))
 
-        # Tray
-        section(self.t("tray_section"))
-        tray_var = ctk.StringVar(value=self.t("on") if self.settings.get("minimize_to_tray", True) else self.t("off"))
+        # Close behavior
+        section(self.t("close_behavior"))
+        ctk.CTkLabel(
+            scroll, text=self.t("close_behavior_desc"),
+            font=ctk.CTkFont("Segoe UI", 11),
+            text_color=c["muted"], wraplength=440, justify="left",
+        ).pack(anchor="w", padx=18, pady=(0, 4))
+        close_var = ctk.StringVar(
+            value=self.t("close_minimize") if self.settings.get("close_behavior", "tray") == "tray"
+            else self.t("close_exit"),
+        )
         ctk.CTkSegmentedButton(
-            scroll, values=[self.t("on"), self.t("off")], variable=tray_var,
+            scroll, values=[self.t("close_minimize"), self.t("close_exit")],
+            variable=close_var,
             fg_color=c["card2"], selected_color=c["accent"],
             selected_hover_color=c["accent_hover"],
             unselected_color=c["card2"],
             unselected_hover_color=c["secondary_hover"],
             text_color="white", corner_radius=6, height=30,
             font=ctk.CTkFont("Segoe UI", 12, "bold"),
-            command=lambda v: self._toggle_tray(v == self.t("on")),
+            command=lambda v: self._change_close_behavior(
+                "tray" if v == self.t("close_minimize") else "exit",
+            ),
         ).pack(fill="x", padx=18, pady=(0, 6))
 
         # About
@@ -1040,17 +1080,28 @@ class DNSChangerApp(ctk.CTk):
                 pass
         self._open_settings()
 
-    def _toggle_tray(self, enabled: bool) -> None:
-        self.settings["minimize_to_tray"] = enabled
+    def _change_close_behavior(self, behavior: str) -> None:
+        """Persist the window-close behaviour (``"tray"`` or ``"exit"``)."""
+        if behavior not in ("tray", "exit"):
+            return
+        self.settings["close_behavior"] = behavior
+        self.settings["minimize_to_tray"] = behavior == "tray"
         save_settings(settings_path(), self.settings)
-        if enabled:
+        if behavior == "tray" and TRAY_AVAILABLE:
+            # Idempotent: never spawn a second tray icon.
             self._create_tray()
-        else:
-            self._tray.stop()
+        self._set_status(self.t("close_behavior_saved"), success=True)
+
+    def _toggle_tray(self, enabled: bool) -> None:
+        """Backwards-compatible wrapper kept for callers that predate the
+        close-behaviour setting."""
+        self._change_close_behavior("tray" if enabled else "exit")
 
     # =================================================== TRAY
 
     def _create_tray(self) -> None:
+        # TrayController.start() is idempotent, so reopening the window,
+        # changing settings, or closing/reopening can never add a second icon.
         self._tray.start(
             on_show=lambda: self._safe_after(0, self._restore_from_tray),
             on_toggle=lambda: self._safe_after(0, self._toggle_presets),
@@ -1059,7 +1110,9 @@ class DNSChangerApp(ctk.CTk):
         )
 
     def _on_delete_window(self) -> None:
-        if self.settings.get("minimize_to_tray", True) and TRAY_AVAILABLE:
+        # The close-behaviour setting controls only the normal window Close.
+        # "tray" hides to the tray; "exit" (and any tray Quit) fully exits.
+        if self.settings.get("close_behavior", "tray") == "tray" and TRAY_AVAILABLE:
             try:
                 if self._tray.is_running():
                     self.withdraw()
@@ -1089,7 +1142,15 @@ class DNSChangerApp(ctk.CTk):
             save_settings(settings_path(), self.settings)
         except (tk.TclError, OSError):
             pass
+        # Tray callbacks use _safe_after, which drops work once _shutting_down
+        # is True, so an in-flight tray-quit cannot re-enter.
         self._tray.stop()
+        # Worker threads are daemon threads; stopping the tray, unbinding the
+        # window and destroying the Tk root lets the process exit promptly.
+        try:
+            self.unbind_all("<<FocusIn>>")
+        except tk.TclError:
+            pass
         try:
             self.destroy()
         except tk.TclError:

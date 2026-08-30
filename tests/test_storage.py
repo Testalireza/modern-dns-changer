@@ -8,11 +8,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from presets import DEFAULT_PRESET_NAMES
 from storage import (
     DEFAULT_SETTINGS,
     load_json,
     load_presets,
     load_settings,
+    load_user_presets,
     sanitize_presets,
     sanitize_settings,
     save_json,
@@ -89,12 +91,19 @@ def test_presets_roundtrip() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "presets.json"
         data = {
-            "Google": {"primary": "8.8.8.8", "secondary": "8.8.4.4"},
-            "Cloudflare": {"primary": "1.1.1.1", "secondary": "1.0.0.1"},
+            "My DNS": {"primary": "8.8.8.8", "secondary": "8.8.4.4"},
+            "Backup DNS": {"primary": "1.1.1.1", "secondary": "1.0.0.1"},
         }
         save_presets(p, data)
-        loaded = load_presets(p)
-        assert loaded == data
+        user_loaded = load_user_presets(p)
+        assert user_loaded == data
+        # The display list also contains the built-in defaults, without
+        # overwriting the user's data.
+        merged = load_presets(p)
+        for name in DEFAULT_PRESET_NAMES:
+            assert name in merged
+        for k, v in data.items():
+            assert merged[k] == v
         print("test_presets_roundtrip OK")
 
 
@@ -148,8 +157,11 @@ def test_load_presets_sanitizes_corrupt_file() -> None:
         p = Path(tmp) / "presets.json"
         p.write_text(json.dumps({"Good": {"primary": "8.8.8.8"}, "X": "bad"}),
                      encoding="utf-8")
+        user_loaded = load_user_presets(p)
+        assert user_loaded == {"Good": {"primary": "8.8.8.8", "secondary": ""}}
         loaded = load_presets(p)
-        assert loaded == {"Good": {"primary": "8.8.8.8", "secondary": ""}}
+        assert loaded["Good"] == {"primary": "8.8.8.8", "secondary": ""}
+        assert "X" not in loaded
         print("test_load_presets_sanitizes_corrupt_file OK")
 
 

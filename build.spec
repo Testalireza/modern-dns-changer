@@ -57,7 +57,7 @@ hiddenimports += ["PIL._tkinter_finder"]
 # Our own modules
 for mod in (
     "app_paths", "logger", "platform_utils", "validators", "hotkeys",
-    "storage", "dns_manager", "tray", "widgets", "ui",
+    "presets", "storage", "dns_manager", "tray", "widgets", "ui",
     "translations",
 ):
     hiddenimports.append(mod)

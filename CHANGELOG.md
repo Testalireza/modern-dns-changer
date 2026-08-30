@@ -1,5 +1,19 @@
 # Changelog — v4.1
 
+## Post-4.1 features
+
+* Added nine built-in read-only DNS presets (Anti EA Sanction, Cloudflare,
+  Google, OpenDNS, Quad9, Level3 DNS, DNSPod, Begzar, Jetping) as a single
+  authoritative source in `presets.py`.
+* Added a configurable **Close Behavior** setting in Settings:
+  - `Minimize to Tray` (default, preserves historical behaviour)
+  - `Exit Application` (window Close fully exits, cleaning up tray/hotkeys)
+  - Tray → Quit always fully exits regardless of the setting.
+* `presets.json` now stores only user presets; built-ins are merged at display
+  time, so existing user presets are always preserved and duplicates are
+  avoided (a user preset with a built-in name overrides that built-in).
+* Backwards-compatible migration from the legacy `minimize_to_tray` key.
+
 ## Post-4.1 hardening
 
 Additional reliability/security fixes made after the v4.1 audit and review:

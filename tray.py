@@ -10,15 +10,27 @@ from logger import get_logger
 
 try:
     from PIL import Image, ImageDraw
-except ImportError:  # pragma: no cover
+except (ImportError, OSError) as exc:  # pragma: no cover
     Image = None
     ImageDraw = None
+    try:
+        get_logger().debug("tray: Pillow unavailable: %s", exc)
+    except Exception:
+        pass
 
 try:
     import pystray
     TRAY_AVAILABLE = True
-except ImportError:  # pragma: no cover
+except Exception as exc:  # pragma: no cover
+    # pystray can raise a non-ImportError at import time on headless systems
+    # (e.g. missing X server) or in unusual Windows environments.  The app must
+    # still start without a tray icon rather than crash on import.
+    pystray = None  # type: ignore[assignment]
     TRAY_AVAILABLE = False
+    try:
+        get_logger().debug("tray: pystray unavailable: %s", exc)
+    except Exception:
+        pass
 
 
 def _create_tray_image(size: int = 64):

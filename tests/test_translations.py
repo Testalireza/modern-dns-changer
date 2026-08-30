@@ -70,6 +70,9 @@ def test_no_missing_translations_for_used_keys() -> None:
         "toggle_presets_section", "toggle_presets_desc", "a_label", "b_label",
         "save_ab", "ab_must_differ", "toggle_saved", "on", "off",
         "hotkey_placeholder", "admin_elevation_failed", "no_presets_option",
+        "close_behavior", "close_behavior_desc", "close_minimize", "close_exit",
+        "close_behavior_saved", "builtin_badge", "preset_builtin_readonly",
+        "preset_save_failed",
     ]
     for key in used:
         assert key in TRANSLATIONS["en"], f"English translation missing: {key}"

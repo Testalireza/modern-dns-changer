@@ -1,5 +1,59 @@
 # Changelog — v4.1
 
+## v4.1.1 bug fixes
+
+Two known v4.1.0 bugs are fixed.  Both are fixed at the root cause — no
+functionality was disabled and no checks were silenced.
+
+* **Mouse-wheel scrolling works over the whole main content area.**
+  Previously the wheel only responded over the far left/right margins of the
+  window: `SmoothScrollFrame` bound the wheel to the scroll canvas and tried
+  to add/remove child bindings in `<Enter>`/`<Leave>` handlers.  Tk fires
+  `<Leave>` (`NotifyInferior`) whenever the pointer moves *onto* a child
+  widget, so the handler immediately removed the very bindings needed to
+  scroll over content — and widgets created later never got bindings at all.
+  The frame now uses proper **scroll event routing**: a single
+  `<MouseWheel>`/`<Button-4>`/`<Button-5>` binding per toplevel (never
+  `bind_all`, so dropdowns, text widgets, dialogs and the tray keep their
+  native behaviour) routes the event to the nearest registered scrollable by
+  walking up the widget parent chain.  Routing decisions live in the new,
+  display-independent `scroll_router.py` and are covered by unit tests.
+  Wheel deltas are DPI-scaled (100%/125%/150%+), precision-touchpad sub-notch
+  deltas accumulate correctly, and natively scrollable controls
+  (Text/Listbox/Treeview/other canvases) keep their own wheel behaviour.
+
+* **DNS verification after "Apply DNS" no longer reports false failures.**
+  v4.1.0 could fail with `Verification failed: expected '94.183.166.199' in
+  adapter 'Wi-Fi', got IPv4=[] ...` even though Windows had accepted the
+  configuration.  Fixes in `dns_manager.py`:
+  - Verification now uses a short **bounded retry/backoff** (Windows needs a
+    moment before a fresh configuration is reflected in read APIs) instead
+    of a single read-back 0.3 s after applying.
+  - Reads no longer depend on English-only `netsh` section headers: the
+    PowerShell channel (`Get-DnsClientServerAddress`, locale-independent
+    JSON, no script blocks so it also works under ConstrainedLanguage) is a
+    first-class source, and the `netsh` parser reports *static/DHCP/unknown*
+    instead of guessing on localised systems.
+  - Expected and detected servers are compared **per IP family**
+    (`ipaddress`-normalised) — an empty IPv6 configuration can never fail an
+    IPv4 verification, and both primary *and* secondary servers are verified.
+  - Subprocess output is decoded defensively; localised OEM output can no
+    longer crash the DNS pipeline with `UnicodeDecodeError`.
+  - `netsh set dnsservers` uses fully named parameters (`register=primary`)
+    so nothing depends on positional argument resolution.
+  - **Auto (DHCP)** verification does not look for a specific address: it
+    accepts an explicit DHCP report, or — on localised systems — that the
+    adapter no longer holds exactly the static configuration it had before.
+    A DHCP reset that silently fails is still detected and reported.
+  - Verification failures return **structured diagnostics**; the UI shows a
+    fully localised dialog (English + Persian) with adapter, expected and
+    detected IPv4/IPv6 lists.  Users never see raw Python representations
+    like `IPv4=[...]` again.  Genuine failures (command accepted, config
+    never changed) are still detected, reported, and rolled back.
+  - New regression suite `tests/test_dns_verification.py` simulates the real
+    Windows DNS store (English + localised `netsh`, stale read-back, adapter
+    names with spaces, write failures) for all built-in presets.
+
 ## Post-4.1 features
 
 * Added nine built-in read-only DNS presets (Anti EA Sanction, Cloudflare,

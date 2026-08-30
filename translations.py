@@ -61,6 +61,23 @@ TRANSLATIONS = {
         "applying": "Applying {name}...",
         "applied": "Applied {name} to {adapter}",
         "apply_failed": "Failed to apply DNS",
+        # DNS verification diagnostics
+        "verify_failed_short": "Windows did not confirm the new DNS settings",
+        "verify_failed_title": "DNS Verification Failed",
+        "dhcp_verify_failed_title": "DHCP Verification Failed",
+        "verify_none": "(none)",
+        "verify_failed_detail": (
+            "The DNS change command completed, but Windows did not report the "
+            "expected configuration.\n\n"
+            "Adapter: {adapter}\n\n"
+            "Expected IPv4 DNS:\n{expected_v4}\n\n"
+            "Expected IPv6 DNS:\n{expected_v6}\n\n"
+            "Detected IPv4 DNS:\n{detected_v4}\n\n"
+            "Detected IPv6 DNS:\n{detected_v6}\n\n"
+            "Try applying again, or first click Auto (DHCP) and then reapply. "
+            "If the problem persists, run the application as Administrator."
+        ),
+        "dhcp_verify_failed": "The adapter did not switch to automatic DNS (DHCP)",
         "preset_saved": "Preset {name} saved",
         "preset_deleted": "Deleted {name}",
         "dhcp_applying": "Setting to Auto (DHCP)...",
@@ -178,6 +195,24 @@ TRANSLATIONS = {
         "applying": "در حال اعمال {name}...",
         "applied": "{name} روی {adapter} اعمال شد",
         "apply_failed": "اعمال DNS ناموفق بود",
+        # DNS verification diagnostics
+        "verify_failed_short": "ویندوز تنظیمات جدید DNS را تأیید نکرد",
+        "verify_failed_title": "تأیید DNS ناموفق بود",
+        "dhcp_verify_failed_title": "تأیید DHCP ناموفق بود",
+        "verify_none": "(هیچ‌کدام)",
+        "verify_failed_detail": (
+            "دستور تغییر DNS اجرا شد، اما ویندوز پیکربندی مورد انتظار را "
+            "گزارش نکرد.\n\n"
+            "آداپتور: {adapter}\n\n"
+            "DNSهای IPv4 مورد انتظار:\n{expected_v4}\n\n"
+            "DNSهای IPv6 مورد انتظار:\n{expected_v6}\n\n"
+            "DNSهای IPv4 شناسایی‌شده:\n{detected_v4}\n\n"
+            "DNSهای IPv6 شناسایی‌شده:\n{detected_v6}\n\n"
+            "دوباره اعمال کنید، یا ابتدا (DHCP) Auto را بزنید و سپس دوباره "
+            "اعمال کنید. اگر مشکل برطرف نشد، برنامه را با دسترسی مدیر اجرا "
+            "کنید."
+        ),
+        "dhcp_verify_failed": "آداپتور به حالت خودکار DNS (DHCP) تغییر نکرد",
         "preset_saved": "پیش‌تنظیم {name} ذخیره شد",
         "preset_deleted": "{name} حذف شد",
         "dhcp_applying": "تنظیم به حالت خودکار (DHCP)...",

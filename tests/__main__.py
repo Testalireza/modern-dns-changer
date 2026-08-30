@@ -18,6 +18,8 @@ TESTS = [
     "tests.test_translations",
     "tests.test_dns_manager_parsing",
     "tests.test_dns_apply",
+    "tests.test_dns_verification",
+    "tests.test_scroll_router",
     "tests.test_hotkey",
     "tests.test_tray_lifecycle",
 ]

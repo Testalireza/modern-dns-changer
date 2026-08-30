@@ -22,14 +22,20 @@ Important ``netsh`` notes
   so we always quote the name and fall back to the interface alias when
   the canonical name fails.
 
-For verification we re-read the configuration via
-``netsh interface ip show config`` / ``netsh interface ipv6 show config``
-and parse out the ``Statically Configured DNS Servers`` line.
+For verification we re-read the configuration after applying, using both
+``netsh interface ip show config`` / ``netsh interface ipv6 show dnsservers``
+(parsed text) and the locale-independent PowerShell cmdlet
+``Get-DnsClientServerAddress`` (JSON).  Verification never trusts the write
+command alone: the expected servers are compared, per IP family, against the
+freshly-read state, using :mod:`ipaddress` for normalisation, with a short
+bounded retry/backoff to absorb the small delay Windows may need before the
+new configuration becomes visible.
 """
 from __future__ import annotations
 
 import ipaddress
 import json
+import locale
 import subprocess
 import sys
 import threading
@@ -61,6 +67,15 @@ _CREATE_NO_WINDOW = 0x08000000
 _DEFAULT_TIMEOUT = 8.0
 _VERIFY_TIMEOUT = 6.0
 
+# Bounded verify-after-apply timing.  Windows occasionally needs a moment
+# before a fresh DNS configuration is reported back (the DNS Client service
+# re-reads the store asynchronously).  We therefore re-check a few times with
+# a growing backoff instead of one fixed sleep — but stay strictly bounded so
+# a genuine failure is reported quickly (never an infinite loop, never a
+# multi-second freeze on top of the time the read commands themselves take).
+_VERIFY_INITIAL_DELAY = 0.2
+_VERIFY_RETRY_DELAYS: tuple[float, ...] = (0.3, 0.6, 1.1)
+
 
 def _netsh_args(*args: str) -> list[str]:
     """Build a ``netsh`` command as an argv list (no shell)."""
@@ -71,26 +86,59 @@ def _is_windows() -> bool:
     return sys.platform == "win32"
 
 
+def _decode_output(data: bytes | str | None) -> str:
+    """Decode subprocess output without ever raising.
+
+    ``netsh`` writes in the console's OEM code page, PowerShell (roughly) in
+    the ANSI code page, and neither necessarily matches Python's default
+    encoding.  Treating the output as text with ``text=True`` alone can raise
+    an uncaught :class:`UnicodeDecodeError` on localised Windows builds (e.g.
+    Persian/Arabic code pages), which would kill the worker thread instead of
+    reporting a DNS error.  We capture bytes and try, in order: UTF-8, the
+    system-preferred encoding, and UTF-8 with replacement — IPv4/IPv6
+    literals are pure ASCII, so the data verification cares about always
+    survives.
+    """
+    if data is None:
+        return ""
+    if isinstance(data, str):
+        return data
+    for encoding in ("utf-8", locale.getpreferredencoding(False) or "cp1252"):
+        try:
+            return data.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
 def _run(args: list[str], timeout: float) -> subprocess.CompletedProcess:
     """Run a subprocess safely. No shell, with a timeout and no console.
 
     ``OSError`` (for example ``netsh`` missing on a non-Windows dev box) is
     converted to :class:`subprocess.SubprocessError` so every caller that
     already guards against subprocess failures also handles it correctly.
+
+    Output is captured as bytes and decoded defensively (see
+    :func:`_decode_output`), so localised Windows output can never crash the
+    DNS pipeline.
     """
     kwargs: dict = {
         "args": args,
         "shell": False,
         "capture_output": True,
-        "text": True,
+        "text": False,
         "timeout": timeout,
     }
     if _is_windows():
         kwargs["creationflags"] = _CREATE_NO_WINDOW
     try:
-        return subprocess.run(**kwargs)
+        raw = subprocess.run(**kwargs)
     except OSError as exc:
         raise subprocess.SubprocessError(f"failed to run {args[0]}: {exc}") from exc
+    return subprocess.CompletedProcess(
+        raw.args, raw.returncode,
+        _decode_output(raw.stdout), _decode_output(raw.stderr),
+    )
 
 
 # ------------------------------------------------------------------ data model
@@ -120,13 +168,21 @@ class AdapterDnsState:
 @dataclass
 class DnsResult:
     """Outcome of a DNS operation. ``success`` is True only if the
-    requested configuration was actually applied and verified."""
+    requested configuration was actually applied and verified.
+
+    ``details`` carries structured, UI-friendly diagnostic information.
+    When ``details["code"] == "verification_failed"`` it also contains the
+    adapter name plus the expected/detected IPv4/IPv6 server lists, so the
+    caller can render a proper localised explanation instead of a raw
+    one-line string.
+    """
 
     success: bool
     message: str = ""
     backup: AdapterDnsState | None = None
     verified: AdapterDnsState | None = None
     errors: list[str] = field(default_factory=list)
+    details: dict = field(default_factory=dict)
 
     def __bool__(self) -> bool:  # convenience
         return self.success
@@ -236,30 +292,67 @@ def _list_adapters_netsh_fallback() -> list[dict]:
 
 # ------------------------------------------------------------------ state read
 
+class _NetshRead:
+    """Internal result of the ``netsh``-based read.
+
+    Besides the parsed address lists we record whether the command actually
+    ran and which (English) section markers were seen, because the markers
+    are the only signal distinguishing static DNS from DHCP-provided DNS in
+    ``netsh`` output.  On localised Windows the markers will simply be absent
+    and the callers fall back to the PowerShell-derived addresses plus a
+    content-comparison cross-check.
+    """
+
+    __slots__ = ("state", "ok", "v4_static", "v4_dhcp")
+
+    def __init__(self, state: AdapterDnsState, ok: bool,
+                 v4_static: bool, v4_dhcp: bool) -> None:
+        self.state = state
+        self.ok = ok
+        self.v4_static = v4_static
+        self.v4_dhcp = v4_dhcp
+
+
 def _read_dns_netsh(adapter: str) -> AdapterDnsState:
     """Read DNS using ``netsh``.  Returns the parsed adapter state."""
+    return _read_dns_netsh_full(adapter).state
+
+
+def _read_dns_netsh_full(adapter: str) -> _NetshRead:
+    """Read DNS using ``netsh`` and report *how reliable* the read was."""
     log = get_logger()
     state = AdapterDnsState(name=adapter)
+    ok = False
+    v4_static = False
+    v4_dhcp = False
 
     # IPv4
     try:
         r = _run(_netsh_args("interface", "ip", "show", "config", f'name={adapter}'),
                  timeout=_VERIFY_TIMEOUT)
-        if r.returncode == 0:
-            state.ipv4, state.is_dhcp = _parse_dns_block(r.stdout or "")
+        if r.returncode == 0 and (r.stdout or "").strip():
+            ok = True
+            servers, block = _parse_dns_block_detailed(r.stdout or "")
+            state.ipv4 = servers
+            state.is_dhcp = block != "static"
+            v4_static = block == "static"
+            v4_dhcp = block == "dhcp"
     except (subprocess.TimeoutExpired, subprocess.SubprocessError) as exc:
         log.warning("read_dns(ipv4) for %r failed: %s", adapter, exc)
 
-    # IPv6
+    # IPv6 — use the unambiguous full command name (``show dns`` relies on
+    # netsh's abbreviation resolution, which has changed between releases).
     try:
-        r = _run(_netsh_args("interface", "ipv6", "show", "dns", f'interface={adapter}'),
+        r = _run(_netsh_args("interface", "ipv6", "show", "dnsservers",
+                             f'interface={adapter}'),
                  timeout=_VERIFY_TIMEOUT)
         if r.returncode == 0:
+            ok = True
             state.ipv6 = _parse_dns_servers(r.stdout or "")
     except (subprocess.TimeoutExpired, subprocess.SubprocessError) as exc:
         log.warning("read_dns(ipv6) for %r failed: %s", adapter, exc)
 
-    return state
+    return _NetshRead(state, ok, v4_static, v4_dhcp)
 
 
 def _read_dns_powershell(adapter: str) -> AdapterDnsState | None:
@@ -267,9 +360,14 @@ def _read_dns_powershell(adapter: str) -> AdapterDnsState | None:
 
     ``Get-DnsClientServerAddress`` returns structured, locale-independent data
     on Windows 8+, which makes DNS verification work even on non-English
-    Windows installations where ``netsh`` output is localised.
+    Windows installations where ``netsh`` output is localised.  The command is
+    written without script blocks (e.g. ``@{n=...;e={...}}``) so it also runs
+    under PowerShell ConstrainedLanguage mode.
 
-    Returns ``None`` when PowerShell is unavailable or returns no data.
+    Returns ``None`` when PowerShell is unavailable, errors out, or reports
+    nothing at all for the adapter.  When the adapter reports rows whose
+    server lists are simply empty (e.g. DHCP with nothing leased yet), a
+    state with empty lists is returned — the read itself worked.
     """
     log = get_logger()
     try:
@@ -277,7 +375,7 @@ def _read_dns_powershell(adapter: str) -> AdapterDnsState | None:
         ps_cmd = (
             "$ErrorActionPreference='SilentlyContinue'; "
             f"Get-DnsClientServerAddress -InterfaceAlias '{safe}' | "
-            "Select-Object AddressFamily, @{n='Servers';e={$_.ServerAddresses}} | "
+            "Select-Object AddressFamily, ServerAddresses | "
             "ConvertTo-Json -Compress"
         )
         r = _run(
@@ -290,17 +388,27 @@ def _read_dns_powershell(adapter: str) -> AdapterDnsState | None:
         payload = json.loads(r.stdout)
         if isinstance(payload, dict):
             payload = [payload]
+        if not isinstance(payload, list) or not payload:
+            return None
+        if not any(isinstance(row, dict) for row in payload):
+            return None
         state = AdapterDnsState(name=adapter)
         for row in payload or []:
+            if not isinstance(row, dict):
+                continue
             raw_family = row.get("AddressFamily") or 0
-            raw_servers = row.get("Servers") or []
+            # Accept both the direct property name and the legacy computed
+            # ``Servers`` alias used by earlier versions of this function.
+            raw_servers = row.get("ServerAddresses")
+            if raw_servers is None:
+                raw_servers = row.get("Servers")
+            if raw_servers is None:
+                raw_servers = []
             if isinstance(raw_servers, str):
                 raw_servers = [raw_servers]
             elif not isinstance(raw_servers, (list, tuple)):
                 raw_servers = []
             servers = [str(s) for s in raw_servers if s]
-            if not servers:
-                continue
             try:
                 family_int = int(raw_family)
             except (TypeError, ValueError):
@@ -310,8 +418,6 @@ def _read_dns_powershell(adapter: str) -> AdapterDnsState | None:
                 state.ipv4 = _dedup([normalize_dns(s) for s in servers])
             elif family_int == 23 or family_text == "ipv6":
                 state.ipv6 = _dedup([normalize_dns(s) for s in servers])
-        if not (state.ipv4 or state.ipv6):
-            return None
         # PowerShell reports the DNS servers currently in effect (static or
         # DHCP).  We cannot authoritatively tell the difference from this
         # cmdlet, so the caller keeps the ``netsh``-derived ``is_dhcp`` flag
@@ -326,6 +432,22 @@ def _read_dns_powershell(adapter: str) -> AdapterDnsState | None:
         return None
 
 
+class _FullRead:
+    """Combined result of every read channel for one adapter."""
+
+    __slots__ = ("state", "reliable", "v4_static_marker", "v4_dhcp_marker",
+                 "ps_worked")
+
+    def __init__(self, state: AdapterDnsState, reliable: bool,
+                 v4_static_marker: bool, v4_dhcp_marker: bool,
+                 ps_worked: bool) -> None:
+        self.state = state
+        self.reliable = reliable
+        self.v4_static_marker = v4_static_marker
+        self.v4_dhcp_marker = v4_dhcp_marker
+        self.ps_worked = ps_worked
+
+
 def read_dns(adapter: str) -> AdapterDnsState:
     """Read the current DNS configuration of ``adapter``.
 
@@ -334,11 +456,25 @@ def read_dns(adapter: str) -> AdapterDnsState:
     static from DHCP), with PowerShell used as a locale-independent fallback
     when ``netsh`` output cannot be parsed (e.g. localised output).
     """
-    log = get_logger()
-    state = _read_dns_netsh(adapter) if _is_windows() else AdapterDnsState(name=adapter)
+    return _read_dns_full(adapter).state
 
+
+def _read_dns_full(adapter: str) -> _FullRead:
+    """Merge every available read channel for ``adapter``.
+
+    Address lists come from ``netsh`` when parseable, filled in from
+    PowerShell otherwise.  The result is considered *reliable* when at least
+    one channel returned data — an unreadable adapter must be reported to the
+    user as a real failure, never silently accepted.
+    """
+    log = get_logger()
     if not _is_windows():
-        return state
+        return _FullRead(AdapterDnsState(name=adapter), reliable=True,
+                         v4_static_marker=False, v4_dhcp_marker=False,
+                         ps_worked=False)
+
+    netsh = _read_dns_netsh_full(adapter)
+    state = netsh.state
 
     ps_state = _read_dns_powershell(adapter)
     if ps_state is not None:
@@ -350,7 +486,24 @@ def read_dns(adapter: str) -> AdapterDnsState:
         if not state.ipv6:
             state.ipv6 = ps_state.ipv6
         log.debug("read_dns: merged PowerShell addresses for %r", adapter)
-    return state
+
+    if not netsh.v4_static and not netsh.v4_dhcp and (state.ipv4 or state.ipv6):
+        # The netsh markers could not be parsed (typical on localised
+        # Windows) yet the adapter clearly has DNS servers configured.  Treat
+        # the configuration as *not-plain-DHCP* so a backup restore re-applies
+        # those servers instead of silently dropping a static configuration
+        # by switching the adapter to DHCP.  (An explicit "configured through
+        # DHCP" marker always wins → English systems keep exact behaviour.)
+        state.is_dhcp = False
+
+    reliable = netsh.ok or ps_state is not None
+    return _FullRead(
+        state,
+        reliable=reliable,
+        v4_static_marker=netsh.v4_static,
+        v4_dhcp_marker=netsh.v4_dhcp,
+        ps_worked=ps_state is not None,
+    )
 
 
 def _extract_ip_tokens(text: str) -> list[str]:
@@ -381,20 +534,25 @@ def _extract_ip_tokens(text: str) -> list[str]:
     return out
 
 
-def _parse_dns_block(text: str) -> tuple[list[str], bool]:
+def _parse_dns_block_detailed(text: str) -> tuple[list[str], str | None]:
     """Parse the DNS block in ``netsh interface ip show config`` output.
 
-    Returns ``(servers, is_dhcp)``. ``is_dhcp`` is True when the adapter
-    obtains its DNS from DHCP rather than from a static list.
+    Returns ``(servers, marker)`` where ``marker`` is:
 
-    The parser recognises both the English headers used by the primary
-    ``netsh`` path and any line containing a label (``something:``) followed by
-    no valid IP address — the latter allows the fallback code to stop the
-    static block even when the operating system localises the surrounding text.
+    * ``"static"`` — an explicit static DNS section was seen;
+    * ``"dhcp"`` — an explicit "configured through DHCP" section was seen;
+    * ``None`` — neither marker was found (typical for localised Windows
+      output; the caller must not invent a DHCP/static verdict and should
+      rely on the locale-independent PowerShell channel instead).
+
+    The parser recognises the English headers used by ``netsh``; any line
+    containing a label (``something:``) followed by no valid IP address ends
+    the static block, so stray addresses later in the output (gateways etc.)
+    are never misread as DNS servers.
     """
     servers: list[str] = []
     in_block = False
-    is_dhcp = True
+    marker: str | None = None
     for raw in (text or "").splitlines():
         line = raw.strip()
         if not line:
@@ -402,11 +560,12 @@ def _parse_dns_block(text: str) -> tuple[list[str], bool]:
         low = line.lower()
         if "statically configured dns servers" in low:
             in_block = True
-            is_dhcp = False
+            marker = "static"
             servers.extend(_extract_ip_tokens(line))
             continue
         if "dns servers configured through dhcp" in low:
-            is_dhcp = True
+            if marker != "static":
+                marker = "dhcp"
             in_block = False
             continue
         if "register with which suffix" in low or "primary only" in low:
@@ -420,7 +579,17 @@ def _parse_dns_block(text: str) -> tuple[list[str], bool]:
                 # A non-IP line (usually a ``label: value`` section header)
                 # ends the static server block.
                 in_block = False
-    return _dedup(servers), is_dhcp
+    return _dedup(servers), marker
+
+
+def _parse_dns_block(text: str) -> tuple[list[str], bool]:
+    """Parse the DNS block in ``netsh interface ip show config`` output.
+
+    Returns ``(servers, is_dhcp)``. ``is_dhcp`` is True unless an explicit
+    static DNS section was detected.
+    """
+    servers, marker = _parse_dns_block_detailed(text)
+    return servers, marker != "static"
 
 
 def _parse_dns_servers(text: str) -> list[str]:
@@ -563,14 +732,17 @@ def _set_adapter_dns_static_family(
     except subprocess.SubprocessError as exc:
         errors.append(f"Failed to clear {family} DNS: {exc}")
 
-    # Set primary
+    # Set primary.  Every parameter is passed in ``name=value`` form so the
+    # meaning never depends on positional matching in netsh (positional
+    # tokens are bound left-to-right, and their interpretation differs
+    # slightly between Windows releases).
     try:
         args = _netsh_args(
             "interface", context, "set", "dns", f"{addr_arg}={adapter}", "static",
             primary, "validate=no",
         )
         if family == "ipv4":
-            args.append("primary")
+            args.append("register=primary")
         r = _run(args, timeout=_DEFAULT_TIMEOUT)
         if r.returncode != 0:
             errors.append(f"Failed to set {family} primary DNS: {(r.stderr or r.stdout).strip()}")
@@ -647,25 +819,121 @@ def _set_adapter_dns_dhcp(adapter: str) -> list[str]:
     return errors
 
 
-def _verify(adapter: str, expected: list[str]) -> tuple[bool, AdapterDnsState, str]:
+def _ip_key(value: str) -> "ipaddress.IPv4Address | ipaddress.IPv6Address | None":
+    """Return the parsed IP object for comparison, or ``None`` if invalid.
+
+    Using :mod:`ipaddress` means different textual representations of the
+    same address (case, IPv6 zero-compression, leading zeros) compare equal,
+    as they must.
+    """
+    try:
+        return ipaddress.ip_address((value or "").strip())
+    except ValueError:
+        return None
+
+
+def _missing_expected(
+    state: AdapterDnsState, expected: Iterable[str],
+) -> tuple[list[str], list[str]]:
+    """Family-aware comparison between the expected and the detected DNS.
+
+    IPv4 expectations are matched *only* against the IPv4 list and IPv6
+    expectations *only* against the IPv6 list.  In particular an empty IPv6
+    configuration can never make an IPv4 verification fail, and vice versa.
+    Order and textual representation are irrelevant.
+    """
+    cur4 = {k for k in (_ip_key(x) for x in state.ipv4) if k is not None}
+    cur6 = {k for k in (_ip_key(x) for x in state.ipv6) if k is not None}
+    missing4: list[str] = []
+    missing6: list[str] = []
+    for raw in expected:
+        key = _ip_key(raw)
+        if key is None:
+            continue
+        if key.version == 4:
+            if key not in cur4:
+                missing4.append(str(key))
+        else:
+            if key not in cur6:
+                missing6.append(str(key))
+    return missing4, missing6
+
+
+def _format_servers(values: Iterable[str]) -> str:
+    """Human-readable server list for log/status messages."""
+    items = [v for v in values if v]
+    return ", ".join(items) if items else "none"
+
+
+def _verify(
+    adapter: str, expected: list[str], sleep=time.sleep,
+) -> tuple[bool, AdapterDnsState, str, dict]:
     """Re-read the adapter's DNS state and check that ``expected`` is present.
 
-    Returns ``(ok, state, message)``.
+    Windows sometimes needs a moment before the freshly applied DNS
+    configuration is reflected in read APIs, so this performs a short,
+    strictly bounded series of read attempts (initial delay, then a growing
+    backoff).  It never loops forever and never succeeds without the OS
+    actually reporting the expected values.
+
+    Returns ``(ok, state, message, details)``.  On failure ``details``
+    contains a ``verification_failed`` code plus the adapter name and the
+    expected/detected IPv4/IPv6 lists so the UI can show a clean, localised
+    diagnostic instead of a raw string dump.
     """
     log = get_logger()
-    # Allow a brief moment for the OS to register the change
-    time.sleep(0.3)
-    state = read_dns(adapter)
-    all_current = [s.lower() for s in state.ipv4 + state.ipv6]
-    for exp in expected:
-        if exp.lower() not in all_current:
-            msg = (
-                f"Verification failed: expected {exp!r} in adapter {adapter!r}, "
-                f"got IPv4={state.ipv4} IPv6={state.ipv6}"
+    expected_norm = [str(k) for k in (_ip_key(e) for e in expected) if k is not None]
+    if not expected_norm:
+        # Nothing to prove (shouldn't happen for a static apply, but never
+        # manufacture a failure out of thin air).
+        return True, read_dns(adapter), "verified", {}
+    exp4 = [e for e in expected_norm if ":" not in e]
+    exp6 = [e for e in expected_norm if ":" in e]
+
+    state = AdapterDnsState(name=adapter)
+    reliable = False
+    delays = (_VERIFY_INITIAL_DELAY, *_VERIFY_RETRY_DELAYS)
+    for attempt, delay in enumerate(delays):
+        if delay > 0:
+            sleep(delay)
+        full = _read_dns_full(adapter)
+        state = full.state
+        reliable = full.reliable
+        missing4, missing6 = _missing_expected(state, expected_norm)
+        if not missing4 and not missing6:
+            log.info(
+                "verify: %r confirmed on attempt %d: ipv4=%s ipv6=%s",
+                adapter, attempt + 1, state.ipv4, state.ipv6,
             )
-            log.error(msg)
-            return False, state, msg
-    return True, state, "verified"
+            return True, state, "verified", {}
+        log.debug(
+            "verify attempt %d for %r: still missing ipv4=%s ipv6=%s (read_ok=%s)",
+            attempt + 1, adapter, missing4, missing6, reliable,
+        )
+
+    details = {
+        "code": "verification_failed",
+        "adapter": adapter,
+        "expected_ipv4": exp4,
+        "expected_ipv6": exp6,
+        "detected_ipv4": list(state.ipv4),
+        "detected_ipv6": list(state.ipv6),
+        "read_ok": reliable,
+    }
+    if not reliable:
+        msg = (
+            f"DNS verification failed for adapter {adapter!r}: unable to read "
+            f"the adapter's DNS configuration back from Windows."
+        )
+    else:
+        msg = (
+            f"DNS verification failed for adapter {adapter!r}: Windows reports "
+            f"IPv4 DNS ({_format_servers(state.ipv4)}) / IPv6 DNS "
+            f"({_format_servers(state.ipv6)}), but IPv4 ({_format_servers(exp4)})"
+            f" / IPv6 ({_format_servers(exp6)}) was requested."
+        )
+    log.error(msg)
+    return False, state, msg, details
 
 
 def _restore_backup_state(backup: AdapterDnsState | None) -> DnsResult:
@@ -736,22 +1004,94 @@ def apply_static(adapter: str, primary: str, secondary: str) -> DnsResult:
                 False, "; ".join(apply_errs), backup=backup, errors=apply_errs,
             )
 
-        ok, verified, msg = _verify(adapter, [p] + ([s] if s else []))
+        ok, verified, msg, verify_details = _verify(adapter, [p] + ([s] if s else []))
         if not ok:
             log.error("apply_static: verification failed — restoring backup")
             _restore_backup_state(backup)
-            return DnsResult(False, msg, backup=backup, verified=verified, errors=[msg])
+            return DnsResult(
+                False, msg, backup=backup, verified=verified,
+                errors=[msg], details=verify_details,
+            )
 
         return DnsResult(True, "DNS applied and verified", backup=backup, verified=verified)
     finally:
         _DNS_LOCK.release()
 
 
+def _verify_dhcp(
+    adapter: str, backup: AdapterDnsState, sleep=time.sleep,
+) -> tuple[bool, AdapterDnsState, str, dict]:
+    """Verify that ``adapter`` really returned to automatic (DHCP) DNS.
+
+    Unlike static verification we must not look for a specific address.
+    Instead, this accepts the configuration when either:
+
+    * ``netsh`` explicitly reports the "configured through DHCP" section, or
+    * no *static* DNS section was detected **and** the adapter no longer
+      holds exactly the static configuration it had before the change
+      (a locale-independent cross-check — if the DHCP reset silently failed,
+      the old static servers would still be there, and that is reported as
+      a real failure).
+
+    Uses the same bounded retry/backoff as :func:`_verify`.
+    """
+    log = get_logger()
+    known_static = {
+        k for k in (_ip_key(x) for x in (backup.ipv4 + backup.ipv6)) if k is not None
+    }
+    state = backup
+    reliable = False
+    delays = (_VERIFY_INITIAL_DELAY, *_VERIFY_RETRY_DELAYS)
+    for attempt, delay in enumerate(delays):
+        if delay > 0:
+            sleep(delay)
+        full = _read_dns_full(adapter)
+        state = full.state
+        reliable = full.reliable
+        if full.v4_dhcp_marker:
+            log.info("verify_dhcp: %r reports DHCP on attempt %d", adapter, attempt + 1)
+            return True, state, "verified", {}
+        if full.v4_static_marker:
+            log.debug("verify_dhcp attempt %d for %r: still static", attempt + 1)
+            continue
+        current = {
+            k for k in (_ip_key(x) for x in (state.ipv4 + state.ipv6)) if k is not None
+        }
+        if full.reliable and not (known_static and known_static == current):
+            log.info(
+                "verify_dhcp: %r has no static DNS after attempt %d (localized check)",
+                adapter, attempt + 1,
+            )
+            return True, state, "verified", {}
+        log.debug(
+            "verify_dhcp attempt %d for %r: cannot confirm DHCP yet (read_ok=%s)",
+            attempt + 1, adapter, full.reliable,
+        )
+
+    details = {
+        "code": "dhcp_verification_failed",
+        "adapter": adapter,
+        "expected_ipv4": [],
+        "expected_ipv6": [],
+        "detected_ipv4": list(state.ipv4),
+        "detected_ipv6": list(state.ipv6),
+        "read_ok": reliable,
+    }
+    msg = (
+        f"DHCP verification failed for adapter {adapter!r}: the adapter did "
+        f"not switch back to automatic DNS (it still reports IPv4 "
+        f"({_format_servers(state.ipv4)}) / IPv6 ({_format_servers(state.ipv6)}))."
+    )
+    log.error(msg)
+    return False, state, msg, details
+
+
 def apply_dhcp(adapter: str) -> DnsResult:
     """Reset ``adapter`` to obtain DNS automatically (DHCP).
 
     The operation is verified by re-reading the adapter state and only reports
-    success when the adapter is actually back in DHCP mode.
+    success when the adapter is actually back in DHCP mode (see
+    :func:`_verify_dhcp`).
     """
     log = get_logger()
     log.info("apply_dhcp: adapter=%r", adapter)
@@ -772,15 +1112,16 @@ def apply_dhcp(adapter: str) -> DnsResult:
             _restore_backup_state(backup)
             return DnsResult(False, "; ".join(errs), backup=backup, errors=errs)
 
-        # Verify: the adapter must now be reported as DHCP-managed.
-        time.sleep(0.3)
-        state = read_dns(adapter)
-        if state.is_dhcp:
-            return DnsResult(True, "Adapter set to automatic DNS (DHCP)", backup=backup)
-        msg = f"Verification failed: adapter {adapter!r} did not return to DHCP mode"
+        ok, state, msg, verify_details = _verify_dhcp(adapter, backup)
+        if ok:
+            return DnsResult(True, "Adapter set to automatic DNS (DHCP)",
+                             backup=backup, verified=state)
         log.error(msg)
         _restore_backup_state(backup)
-        return DnsResult(False, msg, backup=backup, errors=[msg])
+        return DnsResult(
+            False, msg, backup=backup, verified=state,
+            errors=[msg], details=verify_details,
+        )
     finally:
         _DNS_LOCK.release()
 

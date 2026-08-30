@@ -1,10 +1,10 @@
-"""Translations for Modern DNS Changer — English & Persian (Farsi)"""
+"""Translations for Modern DNS Changer — English & Persian (Farsi)."""
 
 TRANSLATIONS = {
     "en": {
         # Header
         "title": "Modern DNS Changer",
-        "subtitle": "Manage your WiFi DNS settings",
+        "subtitle": "Manage your network DNS settings",
         "settings_btn": "Settings",
         # Adapter
         "adapter": "Network Adapter",
@@ -30,6 +30,7 @@ TRANSLATIONS = {
         "preset_b": "Preset B:",
         "hotkey_label": "Hotkey:",
         "save_hotkey": "Save",
+        "hotkey_invalid": "Invalid hotkey format",
         # Settings window
         "settings_title": "Settings",
         "appearance": "Appearance",
@@ -44,9 +45,10 @@ TRANSLATIONS = {
         "minimize_to_tray": "Minimize to system tray",
         "tray_desc": "When enabled, closing the window sends it to the tray instead of quitting.",
         "about_section": "About",
-        "about_text": "Modern DNS Changer v3.0\nBuilt with Python & CustomTkinter\n© 2026 Testalireza",
+        "about_text": "Modern DNS Changer v{version}\nBuilt with Python & CustomTkinter\n© 2026 Testalireza",
         "save_settings": "Save",
         "close": "Close",
+        "cancel": "Cancel",
         # Status messages
         "applying": "Applying {name}...",
         "applied": "Applied {name} to {adapter}",
@@ -62,7 +64,7 @@ TRANSLATIONS = {
         "hotkey_saved": "Hotkey saved: {key}",
         "settings_saved": "Settings saved",
         "hotkey_applied": "Hotkey applied {name}",
-        "toggle_failed": "Toggle failed",
+        "toggle_failed": "Set Preset A and B in Settings first",
         # Admin
         "admin_needed": "Administrator Needed",
         "admin_msg": "DNS changes require admin privileges.\nPlease run as Administrator.",
@@ -72,11 +74,26 @@ TRANSLATIONS = {
         "tray_quit": "Quit",
         "tray_toggle": "Toggle DNS",
         "tray_tooltip": "Modern DNS Changer",
+        # Download updated repository
+        "download_repo_btn": "Download Updated Repository",
+        "download_repo_title": "Download Updated Repository",
+        "download_repo_desc": (
+            "Downloads the latest source code ZIP of this project from GitHub.\n"
+            "URL: {url}\n\n"
+            "The ZIP will be saved next to the application and contains the "
+            "complete repository so you can replace the old files and commit."
+        ),
+        "downloading": "Downloading...",
+        "downloading_url": "Connecting to {url}...",
+        "downloading_progress": "Downloaded {done} / {total} bytes",
+        "downloaded_to": "Saved to: {path}",
+        "download_failed": "Download failed: {error}",
+        "download": "Download",
     },
     "fa": {
         # Header
         "title": "تغییر‌دهنده DNS مدرن",
-        "subtitle": "تنظیمات DNS وای‌فای خود را مدیریت کنید",
+        "subtitle": "تنظیمات DNS شبکه خود را مدیریت کنید",
         "settings_btn": "تنظیمات",
         # Adapter
         "adapter": "آداپتور شبکه",
@@ -102,6 +119,7 @@ TRANSLATIONS = {
         "preset_b": "پیش‌تنظیم B:",
         "hotkey_label": "کلید میانبر:",
         "save_hotkey": "ذخیره",
+        "hotkey_invalid": "قالب کلید میانبر نامعتبر است",
         # Settings window
         "settings_title": "تنظیمات",
         "appearance": "ظاهر",
@@ -116,9 +134,10 @@ TRANSLATIONS = {
         "minimize_to_tray": "کوچک کردن به سینی سیستم",
         "tray_desc": "با فعال‌سازی، بستن پنجره آن را به سینی سیستم می‌فرستد.",
         "about_section": "درباره",
-        "about_text": "تغییر‌دهنده DNS مدرن v3.0\nساخته‌شده با پایتون و CustomTkinter\n© ۲۰۲۶ Testalireza",
+        "about_text": "تغییر‌دهنده DNS مدرن v{version}\nساخته‌شده با پایتون و CustomTkinter\n© ۲۰۲۶ Testalireza",
         "save_settings": "ذخیره",
         "close": "بستن",
+        "cancel": "انصراف",
         # Status messages
         "applying": "در حال اعمال {name}...",
         "applied": "{name} روی {adapter} اعمال شد",
@@ -134,7 +153,7 @@ TRANSLATIONS = {
         "hotkey_saved": "کلید ذخیره شد: {key}",
         "settings_saved": "تنظیمات ذخیره شد",
         "hotkey_applied": "کلید اعمال شد: {name}",
-        "toggle_failed": "جابه‌جایی ناموفق بود",
+        "toggle_failed": "ابتدا پیش‌تنظیم A و B را در تنظیمات مشخص کنید",
         # Admin
         "admin_needed": "نیاز به دسترسی مدیر",
         "admin_msg": "تغییر DNS نیاز به دسترسی مدیر دارد.\nلطفاً به‌عنوان مدیر اجرا کنید.",
@@ -144,12 +163,38 @@ TRANSLATIONS = {
         "tray_quit": "خروج",
         "tray_toggle": "جابه‌جایی DNS",
         "tray_tooltip": "تغییر‌دهنده DNS مدرن",
-    }
+        # Download updated repository
+        "download_repo_btn": "دانلود مخزن به‌روزشده",
+        "download_repo_title": "دانلود مخزن به‌روزشده",
+        "download_repo_desc": (
+            "آخرین ZIP کد منبع این پروژه از گیت‌هاب دانلود می‌شود.\n"
+            "نشانی: {url}\n\n"
+            "این فایل ZIP در کنار برنامه ذخیره می‌شود و شامل کل پروژه است "
+            "تا بتوانید فایل‌های قدیمی را جایگزین و commit کنید."
+        ),
+        "downloading": "در حال دانلود...",
+        "downloading_url": "در حال اتصال به {url}...",
+        "downloading_progress": "{done} / {total} بایت دانلود شد",
+        "downloaded_to": "ذخیره شد در: {path}",
+        "download_failed": "دانلود ناموفق بود: {error}",
+        "download": "دانلود",
+    },
 }
 
-def get_text(lang, key, **kwargs):
-    """Get translated text for a given language and key."""
-    text = TRANSLATIONS.get(lang, TRANSLATIONS["en"]).get(key, TRANSLATIONS["en"].get(key, key))
+
+def get_text(lang: str, key: str, **kwargs) -> str:
+    """Get translated text for a given language and key.
+
+    Falls back to English, then to ``key`` itself, if a translation is
+    missing. Format placeholders are filled with ``kwargs``.
+    """
+    lang_dict = TRANSLATIONS.get(lang, TRANSLATIONS["en"])
+    text = lang_dict.get(key)
+    if text is None:
+        text = TRANSLATIONS["en"].get(key, key)
     if kwargs:
-        text = text.format(**kwargs)
+        try:
+            text = text.format(**kwargs)
+        except (KeyError, IndexError):
+            pass
     return text

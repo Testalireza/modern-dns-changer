@@ -65,6 +65,11 @@ def test_no_missing_translations_for_used_keys() -> None:
         "downloading", "downloading_url", "downloading_progress",
         "downloaded_to", "download_failed", "download",
         "hotkey_invalid",
+        "operation_in_progress", "best", "all_timed_out", "best_dns",
+        "all_timed_out_status", "ping", "ping_all", "pinging",
+        "toggle_presets_section", "toggle_presets_desc", "a_label", "b_label",
+        "save_ab", "ab_must_differ", "toggle_saved", "on", "off",
+        "hotkey_placeholder", "admin_elevation_failed", "no_presets_option",
     ]
     for key in used:
         assert key in TRANSLATIONS["en"], f"English translation missing: {key}"

@@ -132,11 +132,32 @@ def test_sanitize_preset_name() -> None:
     print("test_sanitize_preset_name OK")
 
 
+def test_is_valid_dns_rejects_invalid_address_categories() -> None:
+    # Broadcast / multicast / unspecified are never valid DNS server targets.
+    assert not is_valid_dns("0.0.0.0")
+    assert not is_valid_dns("255.255.255.255")
+    assert not is_valid_dns("224.0.0.1")
+    assert not is_valid_dns("ff02::1")
+    assert not is_valid_dns("::")
+    # Loopback is a legitimate local resolver.
+    assert is_valid_dns("127.0.0.1")
+    assert is_valid_dns("::1")
+    print("test_is_valid_dns_rejects_invalid_address_categories OK")
+
+
+def test_is_valid_dns_leading_zero_v4_rejected() -> None:
+    # Python's ipaddress rejects an IPv4 address with leading zeros since 3.9.5.
+    assert not is_valid_dns("01.1.1.1")
+    print("test_is_valid_dns_leading_zero_v4_rejected OK")
+
+
 if __name__ == "__main__":
     test_ipv4()
     test_ipv6()
     test_is_valid_ip()
     test_is_valid_dns()
+    test_is_valid_dns_rejects_invalid_address_categories()
+    test_is_valid_dns_leading_zero_v4_rejected()
     test_normalize_ip()
     test_normalize_dns()
     test_has_duplicates()

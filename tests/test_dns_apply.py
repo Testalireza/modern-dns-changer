@@ -1,6 +1,7 @@
 """Tests for dns_manager.apply_static / apply_dhcp that mock subprocess."""
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -225,6 +226,118 @@ def test_ping_host_raises() -> None:
     print("test_ping_host_raises OK")
 
 
+def test_apply_static_ipv6_does_not_touch_ipv4() -> None:
+    """An IPv6 preset must only write to the IPv6 stack."""
+    ipv4_dhcp = "DNS Servers configured through DHCP:    192.168.1.1\n"
+    ipv6_static = (
+        "Configured DNS Servers:                2606:4700:4700::1111\n"
+        "                                       fd00::2\n"
+        "Register with which suffix:            Primary only\n"
+    )
+    show_dns_n = [0]
+    calls: list[list] = []
+
+    def fake_run(args, **kwargs):
+        calls.append(list(args))
+        if _is_show_config(args):
+            return _ok(stdout=ipv4_dhcp)
+        if _is_show_dns(args):
+            show_dns_n[0] += 1
+            return _ok(stdout=ipv6_static if show_dns_n[0] == 2 else "")
+        return _ok()
+
+    with patch.object(dns_manager, "_is_windows", return_value=True), \
+         patch.object(dns_manager, "_run", side_effect=fake_run):
+        result = apply_static("Wi-Fi", "2606:4700:4700::1111", "fd00::2")
+
+    assert result.success, result.message
+    # No IPv4 write commands should have been issued.
+    ipv4_writes = [
+        c for c in calls
+        if any(x == "ip" for x in c)
+        and any(x in ("set", "add", "delete") for x in c)
+    ]
+    assert ipv4_writes == [], f"IPv4 stack was touched: {ipv4_writes}"
+    print("test_apply_static_ipv6_does_not_touch_ipv4 OK")
+
+
+def test_apply_static_mixed_family_rejected() -> None:
+    with patch.object(dns_manager, "_is_windows", return_value=True):
+        result = apply_static("Wi-Fi", "8.8.8.8", "::1")
+    assert not result.success
+    assert any("family" in e.lower() for e in result.errors)
+    print("test_apply_static_mixed_family_rejected OK")
+
+
+def test_apply_static_locked_busy() -> None:
+    """A second operation while one is running is rejected immediately."""
+    assert dns_manager._DNS_LOCK.acquire(blocking=False)
+    try:
+        with patch.object(dns_manager, "_is_windows", return_value=True):
+            result = apply_static("Wi-Fi", "8.8.8.8", "")
+        assert not result.success
+        assert any("running" in e.lower() for e in result.errors)
+    finally:
+        dns_manager._DNS_LOCK.release()
+    print("test_apply_static_locked_busy OK")
+
+
+def test_read_dns_powershell_scalar_servers() -> None:
+    """PowerShell may report a single server as a scalar instead of a list."""
+    payload = json.dumps({"AddressFamily": 2, "Servers": "8.8.8.8"})
+
+    def fake_run(args, **kwargs):
+        return _ok(stdout=payload)
+
+    with patch.object(dns_manager, "_is_windows", return_value=True), \
+         patch.object(dns_manager, "_run", side_effect=fake_run):
+        state = dns_manager._read_dns_powershell("Wi-Fi")
+
+    assert state is not None
+    assert state.ipv4 == ["8.8.8.8"]
+    print("test_read_dns_powershell_scalar_servers OK")
+
+
+def test_read_dns_powershell_string_family() -> None:
+    """Some PowerShell versions return AddressFamily as a string."""
+    payload = json.dumps({
+        "AddressFamily": "IPv6",
+        "Servers": ["2001:4860:4860::8888"],
+    })
+
+    def fake_run(args, **kwargs):
+        return _ok(stdout=payload)
+
+    with patch.object(dns_manager, "_is_windows", return_value=True), \
+         patch.object(dns_manager, "_run", side_effect=fake_run):
+        state = dns_manager._read_dns_powershell("Wi-Fi")
+
+    assert state is not None
+    assert state.ipv6 == ["2001:4860:4860::8888"]
+    print("test_read_dns_powershell_string_family OK")
+
+
+def test_apply_dhcp_verify_fails_when_static_remains() -> None:
+    """If the adapter still reports static DNS after reset, DHCP fails."""
+    static = (
+        "Statically Configured DNS Servers:    8.8.8.8\n"
+        "                                      8.8.4.4\n"
+    )
+
+    def fake_run(args, **kwargs):
+        if _is_show_config(args):
+            return _ok(stdout=static)
+        return _ok()
+
+    with patch.object(dns_manager, "_is_windows", return_value=True), \
+         patch.object(dns_manager, "_run", side_effect=fake_run):
+        result = apply_dhcp("Wi-Fi")
+    assert not result.success
+    assert any("dhcp" in result.message.lower() or "verification" in result.message.lower()
+               for e in [result.message])
+    print("test_apply_dhcp_verify_fails_when_static_remains OK")
+
+
 if __name__ == "__main__":
     test_apply_static_happy_path()
     test_apply_static_invalid_primary()
@@ -238,4 +351,10 @@ if __name__ == "__main__":
     test_ping_host_success()
     test_ping_host_timeout()
     test_ping_host_raises()
+    test_apply_static_ipv6_does_not_touch_ipv4()
+    test_apply_static_mixed_family_rejected()
+    test_apply_static_locked_busy()
+    test_read_dns_powershell_scalar_servers()
+    test_read_dns_powershell_string_family()
+    test_apply_dhcp_verify_fails_when_static_remains()
     print("\nAll dns apply tests passed.")

@@ -149,12 +149,9 @@ class SmoothScrollFrame(ctk.CTkFrame):
 
     def _bind_descendants(self, _event=None) -> None:
         """Attach mousewheel binding to all descendants of ``inner``."""
-        try:
-            self.inner.bind_all  # exists on Frame? no — use walk
-        except AttributeError:
-            pass
-        # Use tk's walk to enumerate descendants. We bind only on Enter to
-        # avoid the global-scope issue of bind_all.
+        # Walk the widget tree under ``inner`` and bind the mousewheel event
+        # to each widget. We only do this when the cursor enters the area, to
+        # avoid stealing events from other widgets.
         try:
             widget: tk.Misc = self.inner
             stack = [widget]

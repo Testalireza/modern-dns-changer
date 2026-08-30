@@ -12,7 +12,8 @@ robust IPv4 + IPv6 handling.
 ## Features
 
 - **One-click DNS switching** for any physical network adapter
-- **IPv4 + IPv6** — configures both address families
+- **IPv4 or IPv6** — each preset always applies to a single IP family, which
+  is what Windows actually permits per stack
 - **Custom DNS presets** — saved to `presets.json` (name + primary + secondary)
 - **Backup & verification** — the previous DNS configuration is backed up
   before changes are applied, and the new state is re-read from Windows
@@ -28,6 +29,8 @@ robust IPv4 + IPv6 handling.
 - **Download Updated Repository** — in-app button that fetches the latest
   source ZIP from GitHub so you can sync your local copy of the project
 - **Structured logging** — to `modern_dns_changer.log` (rotated, thread-safe)
+- **Operation serialization** — a second DNS change is rejected instead of
+  two `netsh` commands racing each other
 
 ## Download
 
@@ -100,6 +103,7 @@ modern-dns-changer/
 ├── platform_utils.py    # Admin check, Win11 effects, DPI awareness
 ├── validators.py        # IP/DNS validation
 ├── storage.py           # Atomic JSON read/write
+├── hotkeys.py           # Shared hotkey parser (UI + tests)
 ├── tray.py              # System-tray controller
 ├── widgets.py           # SmoothScrollFrame
 ├── logger.py            # Rotating log handler
@@ -143,14 +147,21 @@ binaries. The download is performed by Python's standard
 | IPv4 automatic (DHCP)   | ✅                                         |
 | IPv6 manual             | ✅ (best-effort, when adapter has IPv6)   |
 | IPv6 automatic (DHCP)   | ✅ (best-effort)                          |
+| IPv4+IPv6 in one preset | ⚠️ Not supported — presets are single-family |
 | Multiple adapters       | ✅ — pick from a sorted list              |
 | Wi-Fi                   | ✅                                         |
 | Ethernet                | ✅                                         |
 | Virtual adapters        | ⚠️ Filtered out by `Get-NetAdapter -Physical` |
-| Pre-change backup       | ✅ — `presets.json` & in-memory snapshot  |
+| Pre-change backup       | ✅ — in-memory snapshot                   |
 | Post-change verification| ✅ — re-reads the adapter state           |
-| Timeouts on every netsh | ✅ — 6–8 s per command                    |
-| DNS server validation   | ✅ — rejects invalid IPs before applying  |
+| Timeouts on every netsh | ✅ — 8 s per command                      |
+| DNS server validation   | ✅ — rejects invalid/non-unicast IPs       |
+| Concurrent-op protection| ✅ — a second DNS change is rejected       |
+
+> Because Windows keeps the IPv4 and IPv6 DNS stacks separate, each preset
+> stores one **primary** and one **secondary** server of the **same** IP family
+> (either both IPv4 or both IPv6). To configure the other family, create a
+> second preset and apply it separately.
 
 ## Requirements
 
@@ -171,6 +182,42 @@ binaries. The download is performed by Python's standard
 | `pyinstaller` is not found                           | `pip install pyinstaller`                                                            |
 | The app is in the wrong language                     | Settings → Language                                                                  |
 | I see only "(no presets)"                            | Add a preset using the form at the bottom of the main window                        |
+| The app cannot restart as Admin                      | UAC was cancelled. Right-click the `.exe`/`main.py` → *Run as administrator*        |
+| I get "Another DNS operation is already running"     | Wait a moment; DNS changes are deliberately serialized so two `netsh` commands cannot race |
+
+## Automated Testing
+
+Run the unit tests from the repository root:
+
+```bash
+python -m tests
+```
+
+The suite covers DNS validation, `netsh` output parsing (including IPv6),
+`apply_static` / `apply_dhcp` with mocked subprocesses, configuration
+sanitisation, hotkey parsing, translations and path resolution.  The tests
+never change the machine's real DNS settings.
+
+CI (`.github/workflows/ci.yml`) runs the suite on Windows and Ubuntu for
+Python 3.10/3.12, and builds the Windows `.exe` with PyInstaller on every PR.
+
+## Known Limitations
+
+- **IPv4 + IPv6 in one preset is not supported.**  Windows keeps the DNS
+  configuration for each stack separate, so a preset is either IPv4 or IPv6.
+- **`netsh` output is localised on non-English Windows.**  The app uses
+  PowerShell `Get-DnsClientServerAddress` as a locale-independent fallback for
+  *verification*, while continuing to use `netsh` (which is parser-based) to
+  detect DHCP vs static.  On heavily-localised systems, a static preset that
+  Windows refuses to set could occasionally be reported more conservatively.
+- **Not tested on a real Windows machine in this environment.**  DNS changes,
+  UAC, tray notifications and the packaged `.exe` require a Windows 10/11
+  machine and cannot be exercised from the sandbox that produced this PR.  The
+  Windows build is validated in CI where a Windows runner is available.
+- **Portable data location.**  `presets.json`, `settings.json` and the log file
+  are stored next to the application, which keeps the `.exe` portable.  If you
+  put the `.exe` in a read-only directory such as `C:\Program Files`, settings
+  will not persist unless the app has write access there.
 
 ## License
 

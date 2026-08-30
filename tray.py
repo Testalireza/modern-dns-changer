@@ -91,6 +91,11 @@ class TrayController:
                 self._thread = None
                 return False
 
+    def is_running(self) -> bool:
+        """Return True if the tray icon is currently running."""
+        with self._lock:
+            return self._icon is not None
+
     def stop(self) -> None:
         """Stop the tray icon. Safe to call multiple times."""
         with self._lock:

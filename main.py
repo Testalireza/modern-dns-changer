@@ -48,7 +48,12 @@ def _setup_environment() -> None:
 
 
 def _ensure_admin() -> None:
-    """If we are not elevated on Windows, relaunch ourselves with UAC."""
+    """If we are not elevated on Windows, relaunch ourselves with UAC.
+
+    The ``--elevated`` flag is added by :func:`platform_utils.request_admin_elevation`
+    so a child process that *still* is not elevated (for example a machine with
+    UAC disabled) does not relaunch itself again forever.
+    """
     try:
         from platform_utils import is_admin, is_windows, request_admin_elevation
     except ImportError:
@@ -56,6 +61,10 @@ def _ensure_admin() -> None:
     if not is_windows():
         return
     if is_admin():
+        return
+    if "--elevated" in sys.argv:
+        # An earlier relaunch already requested elevation in this logical
+        # launch; show the non-admin banner instead of looping.
         return
     # We are non-elevated on Windows. Relaunch elevated and exit this process.
     if request_admin_elevation():

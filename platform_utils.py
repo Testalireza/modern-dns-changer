@@ -28,27 +28,43 @@ def is_admin() -> bool:
         return False
 
 
+def _admin_script_path() -> str:
+    """Return the Python script to relaunch when running from source."""
+    if getattr(sys, "frozen", False):
+        return ""
+    raw = sys.argv[0] if sys.argv and sys.argv[0] else "main.py"
+    # ``sys.argv[0]`` is normally ``main.py`` (possibly relative).  Resolve it
+    # against the current working directory so the elevated child starts in
+    # the same place the user started the program.
+    if os.path.exists(raw):
+        return os.path.abspath(raw)
+    candidate = os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")
+    return os.path.abspath(candidate)
+
+
 def request_admin_elevation() -> bool:
     """Request UAC elevation and relaunch the current process.
 
     Returns ``True`` if the elevation request was *launched* (not necessarily
     accepted by the user). Returns ``False`` if we cannot relaunch.
+
+    The child is started with ``--elevated`` so the parent launch does not
+    trigger an infinite UAC/elevation loop if the child is still not elevated.
     """
     log = get_logger()
     if not is_windows():
         return False
     try:
-        # When running as a frozen EXE, sys.executable is the .exe
-        # When running from source, sys.executable is python.exe and we
-        # need to pass the script path as the first argument.
         exe = sys.executable
+        params: str | None = None
         if getattr(sys, "frozen", False):
-            params = None
+            params = "--elevated"
         else:
-            params = f'"{os.path.abspath(__file__)}"'
+            params = f'"{_admin_script_path()}" --elevated'
+        workdir = os.path.dirname(os.path.abspath(exe)) if getattr(sys, "frozen", False) else os.getcwd()
         SW_SHOWNORMAL = 1
         rc = ctypes.windll.shell32.ShellExecuteW(
-            None, "runas", exe, params, None, SW_SHOWNORMAL
+            None, "runas", exe, params, workdir, SW_SHOWNORMAL
         )
         # ShellExecuteW returns > 32 on success
         if rc <= 32:

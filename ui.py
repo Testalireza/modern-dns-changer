@@ -3,7 +3,7 @@ Main application UI for Modern DNS Changer v4.1.
 """
 from __future__ import annotations
 
-import re
+import os
 import threading
 import tkinter as tk
 import urllib.error
@@ -42,6 +42,7 @@ from storage import (
     save_presets,
     save_settings,
 )
+from hotkeys import hotkey_str_to_tk
 from translations import get_text
 from tray import TRAY_AVAILABLE, TrayController
 from widgets import SmoothScrollFrame
@@ -129,6 +130,7 @@ class DNSChangerApp(ctk.CTk):
         self._settings_win: ctk.CTkToplevel | None = None
         self._admin_dialog: ctk.CTkToplevel | None = None
         self._worker_threads: list[threading.Thread] = []
+        self._busy = False
 
         # Load persisted data
         self.presets: dict = load_presets(presets_path())
@@ -210,33 +212,11 @@ class DNSChangerApp(ctk.CTk):
     def _hotkey_str_to_tk(hk: str) -> str | None:
         """Convert a human hotkey string (e.g. ``ctrl+shift+f9``) to a Tk
         binding sequence. Returns ``None`` for invalid input.
+
+        Delegates to :mod:`hotkeys` so the UI, the settings entry and the
+        automated tests all use exactly the same parser.
         """
-        if not hk:
-            return None
-        parts = [p.strip().lower() for p in hk.split("+") if p.strip()]
-        if not parts:
-            return None
-        key = parts[-1]
-        mods: list[str] = []
-        for p in parts[:-1]:
-            if p in ("ctrl", "control"):
-                mods.append("Control")
-            elif p == "shift":
-                mods.append("Shift")
-            elif p == "alt":
-                mods.append("Alt")
-        is_fkey = bool(re.match(r"^f([1-9]|1\d|2[0-4])$", key))
-        # Validate the key: must be a single printable char, a function key
-        # like f1..f24, or one of a few special names
-        if not re.match(r"^[a-z0-9_]$", key) and not is_fkey \
-                and key not in {"escape", "space", "tab", "return", "backspace", "home", "end"}:
-            return None
-        key_name = key.upper() if is_fkey else key
-        if mods:
-            return "<" + "-".join(mods) + "-" + key_name + ">"
-        if is_fkey:
-            return f"<{key_name}>"
-        return f"<{key}>"
+        return hotkey_str_to_tk(hk)
 
     def _bind_hotkey(self) -> None:
         if self._shutting_down:
@@ -261,17 +241,25 @@ class DNSChangerApp(ctk.CTk):
                 pass
 
     def _toggle_presets(self) -> None:
+        if self._busy:
+            self._set_status(self.t("operation_in_progress"), danger=True)
+            return
         pa = self.settings.get("preset_a", "") or ""
         pb = self.settings.get("preset_b", "") or ""
         if not pa or not pb or pa not in self.presets or pb not in self.presets:
             self._set_status(self.t("toggle_failed"), danger=True)
             return
+        adapter = self.adapter_var.get()  # capture on the Tk main thread
         name = pa if self.toggle_state == 0 else pb
         self.toggle_state = 1 - self.toggle_state
         self.selected_preset = name
         self._build_preset_list()
+        self._set_busy(True)
         self._set_status(self.t("applying", name=name))
-        self._spawn_worker(lambda: self._do_apply(name, self.presets.get(name, {})))
+        self._spawn_worker(
+            lambda n=name, d=dict(self.presets.get(name, {})), a=adapter:
+            self._do_apply(n, d, a),
+        )
 
     # =================================================== UI BUILD
 
@@ -498,7 +486,7 @@ class DNSChangerApp(ctk.CTk):
         self.ping_labels[name] = ping_lbl
 
         ping_btn = ctk.CTkButton(
-            btn_frame, text="Ping", width=44, height=28, corner_radius=6,
+            btn_frame, text=self.t("ping"), width=44, height=28, corner_radius=6,
             fg_color=c["ping_blue"], hover_color=c["accent_hover"],
             font=ctk.CTkFont("Segoe UI", 11, "bold"), text_color="white",
             command=lambda n=name: self._ping_preset(n),
@@ -527,7 +515,7 @@ class DNSChangerApp(ctk.CTk):
         row.pack(fill="x", padx=10, pady=(2, 10))
 
         self.ping_all_btn = ctk.CTkButton(
-            row, text="Ping All", width=100, height=28, corner_radius=6,
+            row, text=self.t("ping_all"), width=100, height=28, corner_radius=6,
             fg_color=c["ping_blue"], hover_color=c["accent_hover"],
             font=ctk.CTkFont("Segoe UI", 11, "bold"), text_color="white",
             command=self._ping_all,
@@ -575,7 +563,7 @@ class DNSChangerApp(ctk.CTk):
         c = self.colors
         if name in self.ping_buttons:
             try:
-                self.ping_buttons[name].configure(text="Ping", state="normal")
+                self.ping_buttons[name].configure(text=self.t("ping"), state="normal")
             except tk.TclError:
                 pass
         if name in self.ping_labels:
@@ -592,7 +580,7 @@ class DNSChangerApp(ctk.CTk):
             return
         names = list(self.presets.keys())
         try:
-            self.ping_all_btn.configure(text="Pinging...", state="disabled")
+            self.ping_all_btn.configure(text=self.t("pinging"), state="disabled")
             self.ping_summary_lbl.configure(text="", text_color=self.colors["muted"])
         except tk.TclError:
             return
@@ -620,7 +608,7 @@ class DNSChangerApp(ctk.CTk):
                 if self._shutting_down:
                     return
                 try:
-                    self.ping_all_btn.configure(text="Ping All", state="normal")
+                    self.ping_all_btn.configure(text=self.t("ping_all"), state="normal")
                 except tk.TclError:
                     return
                 valid = {n: ms for n, ms in results.items() if ms >= 0}
@@ -628,20 +616,22 @@ class DNSChangerApp(ctk.CTk):
                     best = min(valid, key=valid.get)
                     try:
                         self.ping_summary_lbl.configure(
-                            text=f"Best: {best} ({valid[best]}ms)",
+                            text=f"{self.t('best')}: {best} ({valid[best]}ms)",
                             text_color=self.colors["success"],
                         )
                     except tk.TclError:
                         pass
-                    self._set_status(f"Best DNS: {best} at {valid[best]}ms", success=True)
+                    self._set_status(
+                        self.t("best_dns", name=best, ms=valid[best]), success=True,
+                    )
                 else:
                     try:
                         self.ping_summary_lbl.configure(
-                            text="All timed out", text_color=self.colors["danger"],
+                            text=self.t("all_timed_out"), text_color=self.colors["danger"],
                         )
                     except tk.TclError:
                         pass
-                    self._set_status("All presets timed out", danger=True)
+                    self._set_status(self.t("all_timed_out_status"), danger=True)
 
             self._safe_after(0, done)
 
@@ -650,6 +640,9 @@ class DNSChangerApp(ctk.CTk):
     # =================================================== ACTIONS
 
     def _apply_selected(self) -> None:
+        if self._busy:
+            self._set_status(self.t("operation_in_progress"), danger=True)
+            return
         if not self.selected_preset:
             if self.presets:
                 self.selected_preset = next(iter(self.presets))
@@ -659,11 +652,12 @@ class DNSChangerApp(ctk.CTk):
                 return
         name = self.selected_preset
         dns = self.presets.get(name, {})
+        adapter = self.adapter_var.get()  # capture on the Tk main thread
+        self._set_busy(True)
         self._set_status(self.t("applying", name=name))
-        self._spawn_worker(lambda n=name, d=dict(dns): self._do_apply(n, d))
+        self._spawn_worker(lambda n=name, d=dict(dns), a=adapter: self._do_apply(n, d, a))
 
-    def _do_apply(self, name: str, dns: dict) -> None:
-        adapter = self.adapter_var.get()
+    def _do_apply(self, name: str, dns: dict, adapter: str) -> None:
         self._safe_after(0, lambda: self._remember_adapter(adapter))
         result: DnsResult = apply_static(
             adapter, dns.get("primary", ""), dns.get("secondary", ""),
@@ -679,9 +673,14 @@ class DNSChangerApp(ctk.CTk):
             self._safe_after(0, lambda: self._set_status(
                 f"{self.t('apply_failed')}: {result.message}", danger=True,
             ))
+        self._safe_after(0, lambda: setattr(self, "_busy", False))
 
     def _set_dhcp(self) -> None:
+        if self._busy:
+            self._set_status(self.t("operation_in_progress"), danger=True)
+            return
         adapter = self.adapter_var.get()
+        self._set_busy(True)
         self._set_status(self.t("dhcp_applying"))
         self._safe_after(0, lambda: self._remember_adapter(adapter))
 
@@ -695,8 +694,12 @@ class DNSChangerApp(ctk.CTk):
                 self._safe_after(0, lambda: self._set_status(
                     f"{self.t('dhcp_failed')}: {result.message}", danger=True,
                 ))
+            self._safe_after(0, lambda: setattr(self, "_busy", False))
 
         self._spawn_worker(worker)
+
+    def _set_busy(self, value: bool) -> None:
+        self._busy = value
 
     def _set_status(self, msg: str, success: bool = False, danger: bool = False) -> None:
         if self._shutting_down:
@@ -881,7 +884,7 @@ class DNSChangerApp(ctk.CTk):
             fg_color=c["entry"], text_color=c["text"],
             border_color=c["accent"], border_width=1,
             font=ctk.CTkFont("Segoe UI", 12),
-            placeholder_text="e.g. F9 or ctrl+d",
+            placeholder_text=self.t("hotkey_placeholder"),
         )
         hk_entry.insert(0, self.settings.get("hotkey", "F9"))
         hk_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
@@ -917,19 +920,19 @@ class DNSChangerApp(ctk.CTk):
             ).pack(side="left", padx=1, pady=2)
 
         # A/B presets
-        section("Toggle Presets (A / B)")
+        section(self.t("toggle_presets_section"))
         ctk.CTkLabel(
-            scroll, text="Pressing the hotkey switches between Preset A and B.",
+            scroll, text=self.t("toggle_presets_desc"),
             font=ctk.CTkFont("Segoe UI", 11),
             text_color=c["muted"], wraplength=440, justify="left",
         ).pack(anchor="w", padx=18, pady=(0, 4))
 
-        preset_names = list(self.presets.keys()) or ["(no presets)"]
+        preset_names = list(self.presets.keys()) or [self.t("no_presets_option")]
         ab_frame = ctk.CTkFrame(scroll, fg_color="transparent")
         ab_frame.pack(fill="x", padx=18, pady=(0, 4))
 
         ctk.CTkLabel(
-            ab_frame, text="A", width=18,
+            ab_frame, text=self.t("a_label"), width=18,
             font=ctk.CTkFont("Segoe UI", 12, "bold"), text_color=c["text"],
         ).pack(side="left", padx=(0, 3))
         self.hk_a_var = ctk.StringVar(
@@ -945,7 +948,7 @@ class DNSChangerApp(ctk.CTk):
         ).pack(side="left", fill="x", expand=True, padx=(0, 8))
 
         ctk.CTkLabel(
-            ab_frame, text="B", width=18,
+            ab_frame, text=self.t("b_label"), width=18,
             font=ctk.CTkFont("Segoe UI", 12, "bold"), text_color=c["text"],
         ).pack(side="left", padx=(0, 3))
         b_def = self.settings.get("preset_b", "")
@@ -965,15 +968,15 @@ class DNSChangerApp(ctk.CTk):
             a_val = self.hk_a_var.get()
             b_val = self.hk_b_var.get()
             if a_val == b_val:
-                self._set_status("A and B must be different presets", danger=True)
+                self._set_status(self.t("ab_must_differ"), danger=True)
                 return
             self.settings["preset_a"] = a_val
             self.settings["preset_b"] = b_val
             save_settings(settings_path(), self.settings)
-            self._set_status(f"Toggle: {a_val} <-> {b_val}", success=True)
+            self._set_status(self.t("toggle_saved", a=a_val, b=b_val), success=True)
 
         ctk.CTkButton(
-            scroll, text="Save A / B", height=30,
+            scroll, text=self.t("save_ab"), height=30,
             font=ctk.CTkFont("Segoe UI", 12, "bold"),
             fg_color=c["accent"], hover_color=c["accent_hover"],
             corner_radius=6, command=save_ab,
@@ -981,16 +984,16 @@ class DNSChangerApp(ctk.CTk):
 
         # Tray
         section(self.t("tray_section"))
-        tray_var = ctk.StringVar(value="On" if self.settings.get("minimize_to_tray", True) else "Off")
+        tray_var = ctk.StringVar(value=self.t("on") if self.settings.get("minimize_to_tray", True) else self.t("off"))
         ctk.CTkSegmentedButton(
-            scroll, values=["On", "Off"], variable=tray_var,
+            scroll, values=[self.t("on"), self.t("off")], variable=tray_var,
             fg_color=c["card2"], selected_color=c["accent"],
             selected_hover_color=c["accent_hover"],
             unselected_color=c["card2"],
             unselected_hover_color=c["secondary_hover"],
             text_color="white", corner_radius=6, height=30,
             font=ctk.CTkFont("Segoe UI", 12, "bold"),
-            command=lambda v: self._toggle_tray(v == "On"),
+            command=lambda v: self._toggle_tray(v == self.t("on")),
         ).pack(fill="x", padx=18, pady=(0, 6))
 
         # About
@@ -1058,7 +1061,7 @@ class DNSChangerApp(ctk.CTk):
     def _on_delete_window(self) -> None:
         if self.settings.get("minimize_to_tray", True) and TRAY_AVAILABLE:
             try:
-                if self._tray._icon is not None:  # type: ignore[attr-defined]
+                if self._tray.is_running():
                     self.withdraw()
                     return
             except (AttributeError, tk.TclError):
@@ -1134,12 +1137,18 @@ class DNSChangerApp(ctk.CTk):
             font=ctk.CTkFont("Segoe UI", 11),
             text_color=c["muted"], justify="center",
         ).pack(pady=(0, 14))
+        def restart_admin() -> None:
+            if request_admin_elevation():
+                on_close()
+                self._quit_app()
+            else:
+                self._set_status(self.t("admin_elevation_failed"), danger=True)
+
         ctk.CTkButton(
             win, text=self.t("restart_admin"), width=180, height=34,
             font=ctk.CTkFont("Segoe UI", 12, "bold"),
             fg_color=c["accent"], hover_color=c["accent_hover"],
-            corner_radius=7,
-            command=lambda: (request_admin_elevation(), on_close(), self._quit_app()),
+            corner_radius=7, command=restart_admin,
         ).pack()
 
     # =================================================== DOWNLOAD REPO
@@ -1228,8 +1237,10 @@ class DNSChangerApp(ctk.CTk):
                 text=self.t("downloaded_to", path=str(target_zip)),
                 text_color=self.colors["success"],
             ))
+            self._safe_after(0, lambda: ok_btn.configure(state="normal"))
             log.info("downloaded repo zip to %s", target_zip)
-        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        except (urllib.error.URLError, urllib.error.ContentTooShortError,
+                OSError, TimeoutError) as exc:
             log.error("download failed: %s", exc)
             err_msg = str(exc)
             self._safe_after(0, lambda e=err_msg: progress.configure(
@@ -1280,11 +1291,12 @@ def _url_download(url: str, dest: Path, progress_cb=None) -> None:
     log = get_logger()
     dest.parent.mkdir(parents=True, exist_ok=True)
     req = urllib.request.Request(url, headers={"User-Agent": "ModernDNSChanger/4.1"})
+    tmp = dest.with_name(f"{dest.name}.part")
     with urllib.request.urlopen(req, timeout=30) as response:
         total = int(response.headers.get("Content-Length") or 0)
         chunk_size = 32 * 1024
         done = 0
-        with open(dest, "wb") as f:
+        with open(tmp, "wb") as f:
             while True:
                 chunk = response.read(chunk_size)
                 if not chunk:
@@ -1296,4 +1308,6 @@ def _url_download(url: str, dest: Path, progress_cb=None) -> None:
                         progress_cb(done, total)
                     except (ValueError, TypeError) as exc:
                         log.debug("progress_cb error: %s", exc)
+            f.flush()
+    os.replace(tmp, dest)
     log.info("downloaded %s -> %s (%d bytes)", url, dest, done)

@@ -28,9 +28,11 @@ and parse out the ``Statically Configured DNS Servers`` line.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field, asdict
 from typing import Iterable
@@ -42,6 +44,10 @@ from validators import (
     normalize_dns,
     sanitize_preset_name,
 )
+
+# Serializes DNS-changing operations so two clicks / hotkeys / tray events can
+# never run two ``netsh`` commands against the same adapter concurrently.
+_DNS_LOCK = threading.Lock()
 
 
 # ------------------------------------------------------------------ utilities
@@ -66,7 +72,12 @@ def _is_windows() -> bool:
 
 
 def _run(args: list[str], timeout: float) -> subprocess.CompletedProcess:
-    """Run a subprocess safely. No shell, with a timeout and no console."""
+    """Run a subprocess safely. No shell, with a timeout and no console.
+
+    ``OSError`` (for example ``netsh`` missing on a non-Windows dev box) is
+    converted to :class:`subprocess.SubprocessError` so every caller that
+    already guards against subprocess failures also handles it correctly.
+    """
     kwargs: dict = {
         "args": args,
         "shell": False,
@@ -76,7 +87,10 @@ def _run(args: list[str], timeout: float) -> subprocess.CompletedProcess:
     }
     if _is_windows():
         kwargs["creationflags"] = _CREATE_NO_WINDOW
-    return subprocess.run(**kwargs)
+    try:
+        return subprocess.run(**kwargs)
+    except OSError as exc:
+        raise subprocess.SubprocessError(f"failed to run {args[0]}: {exc}") from exc
 
 
 # ------------------------------------------------------------------ data model
@@ -222,18 +236,10 @@ def _list_adapters_netsh_fallback() -> list[dict]:
 
 # ------------------------------------------------------------------ state read
 
-def read_dns(adapter: str) -> AdapterDnsState:
-    """Read the current DNS configuration of ``adapter``.
-
-    Returns an :class:`AdapterDnsState` with the current IPv4 / IPv6
-    statically-configured DNS servers. If the adapter is in DHCP mode
-    ``is_dhcp`` will be ``True`` and the address lists will be empty.
-    """
+def _read_dns_netsh(adapter: str) -> AdapterDnsState:
+    """Read DNS using ``netsh``.  Returns the parsed adapter state."""
     log = get_logger()
     state = AdapterDnsState(name=adapter)
-
-    if not _is_windows():
-        return state
 
     # IPv4
     try:
@@ -256,17 +262,140 @@ def read_dns(adapter: str) -> AdapterDnsState:
     return state
 
 
-def _parse_dns_block(text: str) -> tuple[list[str], bool]:
-    """Parse the ``Statically Configured DNS Servers`` block in
-    ``netsh interface ip show config`` output.
+def _read_dns_powershell(adapter: str) -> AdapterDnsState | None:
+    """Read the *effective* DNS server addresses using PowerShell.
 
-    Returns ``(servers, is_dhcp)``. ``is_dhcp`` is True if the adapter
-    obtains its DNS from DHCP rather than from the static list.
+    ``Get-DnsClientServerAddress`` returns structured, locale-independent data
+    on Windows 8+, which makes DNS verification work even on non-English
+    Windows installations where ``netsh`` output is localised.
+
+    Returns ``None`` when PowerShell is unavailable or returns no data.
+    """
+    log = get_logger()
+    try:
+        safe = adapter.replace("'", "''")
+        ps_cmd = (
+            "$ErrorActionPreference='SilentlyContinue'; "
+            f"Get-DnsClientServerAddress -InterfaceAlias '{safe}' | "
+            "Select-Object AddressFamily, @{n='Servers';e={$_.ServerAddresses}} | "
+            "ConvertTo-Json -Compress"
+        )
+        r = _run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive",
+             "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
+            timeout=10.0,
+        )
+        if r.returncode != 0 or not r.stdout.strip():
+            return None
+        payload = json.loads(r.stdout)
+        if isinstance(payload, dict):
+            payload = [payload]
+        state = AdapterDnsState(name=adapter)
+        for row in payload or []:
+            raw_family = row.get("AddressFamily") or 0
+            raw_servers = row.get("Servers") or []
+            if isinstance(raw_servers, str):
+                raw_servers = [raw_servers]
+            elif not isinstance(raw_servers, (list, tuple)):
+                raw_servers = []
+            servers = [str(s) for s in raw_servers if s]
+            if not servers:
+                continue
+            try:
+                family_int = int(raw_family)
+            except (TypeError, ValueError):
+                family_int = 0
+            family_text = str(raw_family).lower()
+            if family_int == 2 or family_text == "ipv4":
+                state.ipv4 = _dedup([normalize_dns(s) for s in servers])
+            elif family_int == 23 or family_text == "ipv6":
+                state.ipv6 = _dedup([normalize_dns(s) for s in servers])
+        if not (state.ipv4 or state.ipv6):
+            return None
+        # PowerShell reports the DNS servers currently in effect (static or
+        # DHCP).  We cannot authoritatively tell the difference from this
+        # cmdlet, so the caller keeps the ``netsh``-derived ``is_dhcp`` flag
+        # when the two sources are combined.  When only this source is used,
+        # the addresses are still useful for verification.
+        log.debug("read_dns(powershell) for %r: ipv4=%s ipv6=%s",
+                  adapter, state.ipv4, state.ipv6)
+        return state
+    except (subprocess.TimeoutExpired, subprocess.SubprocessError,
+            json.JSONDecodeError, ValueError) as exc:
+        log.debug("read_dns(powershell) for %r failed: %s", adapter, exc)
+        return None
+
+
+def read_dns(adapter: str) -> AdapterDnsState:
+    """Read the current DNS configuration of ``adapter``.
+
+    Returns an :class:`AdapterDnsState` with the current IPv4 / IPv6 DNS
+    servers.  On Windows the source of truth is ``netsh`` (to distinguish
+    static from DHCP), with PowerShell used as a locale-independent fallback
+    when ``netsh`` output cannot be parsed (e.g. localised output).
+    """
+    log = get_logger()
+    state = _read_dns_netsh(adapter) if _is_windows() else AdapterDnsState(name=adapter)
+
+    if not _is_windows():
+        return state
+
+    ps_state = _read_dns_powershell(adapter)
+    if ps_state is not None:
+        # If netsh could not read a static block for either family, the
+        # PowerShell effective addresses still let verification succeed and
+        # give the caller accurate server lists for the status/backup UI.
+        if not state.ipv4:
+            state.ipv4 = ps_state.ipv4
+        if not state.ipv6:
+            state.ipv6 = ps_state.ipv6
+        log.debug("read_dns: merged PowerShell addresses for %r", adapter)
+    return state
+
+
+def _extract_ip_tokens(text: str) -> list[str]:
+    """Extract valid IP-address tokens from ``text``.
+
+    This is deliberately generous about surrounding punctuation (Windows
+    ``netsh`` output sometimes adds colons after labels) but strict about the
+    address itself: every token is validated through :func:`ipaddress`.
+
+    The function is what makes the fallback parsers tolerate both IPv4 and
+    IPv6 addresses, including addresses whose first hextet starts with a letter
+    (e.g. ``fe80::1`` or ``2606:4700:4700::1111``).
+    """
+    out: list[str] = []
+    if not text:
+        return out
+    for raw in text.replace(",", " ").split():
+        token = raw.strip(" \t:;()[]\"'")
+        # A trailing colon that belongs to Windows output, not to the address.
+        if token.endswith(":"):
+            token = token[:-1]
+        if not token:
+            continue
+        try:
+            out.append(normalize_dns(token))
+        except ValueError:
+            continue
+    return out
+
+
+def _parse_dns_block(text: str) -> tuple[list[str], bool]:
+    """Parse the DNS block in ``netsh interface ip show config`` output.
+
+    Returns ``(servers, is_dhcp)``. ``is_dhcp`` is True when the adapter
+    obtains its DNS from DHCP rather than from a static list.
+
+    The parser recognises both the English headers used by the primary
+    ``netsh`` path and any line containing a label (``something:``) followed by
+    no valid IP address — the latter allows the fallback code to stop the
+    static block even when the operating system localises the surrounding text.
     """
     servers: list[str] = []
     in_block = False
     is_dhcp = True
-    for raw in text.splitlines():
+    for raw in (text or "").splitlines():
         line = raw.strip()
         if not line:
             continue
@@ -274,68 +403,60 @@ def _parse_dns_block(text: str) -> tuple[list[str], bool]:
         if "statically configured dns servers" in low:
             in_block = True
             is_dhcp = False
-            # Sometimes the first server is on the same line
-            tail = line.split(":", 1)[-1].strip()
-            for s in tail.split():
-                if s:
-                    servers.append(s)
+            servers.extend(_extract_ip_tokens(line))
             continue
         if "dns servers configured through dhcp" in low:
-            # No static servers when DHCP is in effect
             is_dhcp = True
             in_block = False
             continue
+        if "register with which suffix" in low or "primary only" in low:
+            in_block = False
+            continue
         if in_block:
-            # Continuation lines: either a bare IP or a "Label: value" entry.
-            if ":" in line and not line[0].isdigit():
-                # Section header (e.g. "Register with which suffix:") — end
-                # the static block.
+            tokens = _extract_ip_tokens(line)
+            if tokens:
+                servers.extend(tokens)
+            else:
+                # A non-IP line (usually a ``label: value`` section header)
+                # ends the static server block.
                 in_block = False
-                continue
-            # Each line in the block is one server address
-            servers.append(line)
     return _dedup(servers), is_dhcp
 
 
 def _parse_dns_servers(text: str) -> list[str]:
     """Parse ``netsh interface ipv6 show dns`` output.
 
-    The actual output format from Windows is:
+    The typical output format is::
 
         Configuration for interface "Wi-Fi"
         DNS servers configured for this interface:  1::1
                                                    2::2
         Register with which suffix:                  Primary only
 
-    Older variants use ``Configured DNS Servers:``.
+    Older variants use ``Configured DNS Servers:``.  The parser stops when it
+    reaches a label line that contains no IP address, which also tolerates
+    localised output around the DNS block.
     """
     servers: list[str] = []
     capture = False
-    for raw in text.splitlines():
+    for raw in (text or "").splitlines():
         line = raw.strip()
         if not line:
             continue
         low = line.lower()
-        # Start of the DNS server block
         if "dns servers configured" in low or low.startswith("configured dns servers"):
             capture = True
-            tail = line.split(":", 1)[-1].strip()
-            for s in tail.split():
-                if s:
-                    servers.append(s)
+            servers.extend(_extract_ip_tokens(line))
+            continue
+        if "register with which suffix" in low or "primary only" in low:
+            capture = False
             continue
         if capture:
-            # End of block
-            if "register with which suffix" in low or "primary only" in low:
-                break
-            # Continuation lines: either a bare IP or "Label: value"
-            if ":" in line and not line[0].isdigit():
-                tail = line.split(":", 1)[-1].strip()
-                for s in tail.split():
-                    if s:
-                        servers.append(s)
+            tokens = _extract_ip_tokens(line)
+            if tokens:
+                servers.extend(tokens)
             else:
-                servers.append(line)
+                capture = False
     return _dedup(servers)
 
 
@@ -357,8 +478,28 @@ def _dedup(values: Iterable[str]) -> list[str]:
 # ------------------------------------------------------------------ write
 
 
+def _family_of(ip: str) -> str:
+    """Return ``"ipv4"`` or ``"ipv6"`` for a valid normalised IP address."""
+    try:
+        ipaddress.IPv4Address(ip)
+        return "ipv4"
+    except (ipaddress.AddressValueError, ValueError):
+        pass
+    try:
+        ipaddress.IPv6Address(ip)
+        return "ipv6"
+    except (ipaddress.AddressValueError, ValueError):
+        pass
+    raise ValueError(f"not a valid IP address: {ip!r}")
+
+
 def _validate_inputs(primary: str, secondary: str) -> tuple[str, str, list[str]]:
-    """Normalise + validate DNS values. Returns (primary, secondary, errors)."""
+    """Normalise + validate DNS values. Returns (primary, secondary, errors).
+
+    A primary/secondary pair must be the same IP family: Windows treats the
+    IPv4 stack and IPv6 stack separately, and mixing e.g. an IPv4 primary with
+    an IPv6 secondary would silently apply the wrong family to both stacks.
+    """
     errors: list[str] = []
     p = (primary or "").strip()
     s = (secondary or "").strip()
@@ -378,130 +519,130 @@ def _validate_inputs(primary: str, secondary: str) -> tuple[str, str, list[str]]
         errors.append(f"Invalid secondary DNS: {secondary!r}")
     if p and s and p.lower() == s.lower():
         errors.append("Primary and secondary DNS must be different")
+    if p and s:
+        try:
+            if _family_of(p) != _family_of(s):
+                errors.append("Primary and secondary DNS must be the same IP family")
+        except ValueError:
+            pass
     return p, s, errors
 
 
-def _set_adapter_dns_static(adapter: str, primary: str, secondary: str) -> list[str]:
-    """Apply a static IPv4 + IPv6 configuration. Returns a list of error
-    messages (empty on success)."""
+def _set_adapter_dns_static_family(
+    adapter: str, family: str, primary: str, secondary: str,
+) -> list[str]:
+    """Apply a static DNS configuration for one IP family only.
+
+    This is the correct Windows behaviour: ``netsh interface ip`` only manages
+    IPv4 while ``netsh interface ipv6`` only manages IPv6.  Applying an IPv4
+    address to the IPv6 stack (or vice versa) is rejected by Windows and can
+    leave the adapter in an inconsistent state.
+    """
     log = get_logger()
+    if family == "ipv4":
+        context = "ip"
+        addr_arg = "name"
+    elif family == "ipv6":
+        context = "ipv6"
+        addr_arg = "interface"
+    else:
+        raise ValueError(f"unknown family {family!r}")
+
     errors: list[str] = []
 
-    # First, clear any existing DNS entries for this adapter — without this,
+    # Clear any existing DNS entries for this family first — without this,
     # repeated applications can accumulate ``index=2`` entries and fail.
     try:
-        r = _run(_netsh_args("interface", "ip", "delete", "dns",
-                             f"name={adapter}", "all"),
+        r = _run(_netsh_args("interface", context, "delete", "dns",
+                             f"{addr_arg}={adapter}", "all"),
                  timeout=_DEFAULT_TIMEOUT)
         if r.returncode != 0:
-            log.debug("delete ip dns rc=%d stderr=%s", r.returncode, r.stderr)
+            log.debug("%s delete dns rc=%d stderr=%s", family, r.returncode, r.stderr)
     except subprocess.TimeoutExpired:
-        errors.append("Timed out clearing IPv4 DNS")
+        errors.append(f"Timed out clearing {family} DNS")
     except subprocess.SubprocessError as exc:
-        errors.append(f"Failed to clear IPv4 DNS: {exc}")
+        errors.append(f"Failed to clear {family} DNS: {exc}")
 
+    # Set primary
     try:
-        r = _run(_netsh_args("interface", "ipv6", "delete", "dns",
-                             f"interface={adapter}", "all"),
-                 timeout=_DEFAULT_TIMEOUT)
+        args = _netsh_args(
+            "interface", context, "set", "dns", f"{addr_arg}={adapter}", "static",
+            primary, "validate=no",
+        )
+        if family == "ipv4":
+            args.append("primary")
+        r = _run(args, timeout=_DEFAULT_TIMEOUT)
         if r.returncode != 0:
-            log.debug("delete ipv6 dns rc=%d stderr=%s", r.returncode, r.stderr)
+            errors.append(f"Failed to set {family} primary DNS: {(r.stderr or r.stdout).strip()}")
     except subprocess.TimeoutExpired:
-        errors.append("Timed out clearing IPv6 DNS")
+        errors.append(f"Timed out setting {family} primary DNS")
     except subprocess.SubprocessError as exc:
-        errors.append(f"Failed to clear IPv6 DNS: {exc}")
+        errors.append(f"Failed to set {family} primary DNS: {exc}")
 
-    # Set IPv4 primary
-    try:
-        r = _run(_netsh_args("interface", "ip", "set", "dns",
-                             f"name={adapter}", "static", primary,
-                             "primary", "validate=no"),
-                 timeout=_DEFAULT_TIMEOUT)
-        if r.returncode != 0:
-            errors.append(f"Failed to set IPv4 primary: {(r.stderr or r.stdout).strip()}")
-    except subprocess.TimeoutExpired:
-        errors.append("Timed out setting IPv4 primary DNS")
-    except subprocess.SubprocessError as exc:
-        errors.append(f"Failed to set IPv4 primary: {exc}")
-
-    # Set IPv4 secondary
+    # Set secondary
     if secondary and not errors:
         try:
-            r = _run(_netsh_args("interface", "ip", "add", "dns",
-                                 f"name={adapter}", secondary, "index=2",
-                                 "validate=no"),
-                     timeout=_DEFAULT_TIMEOUT)
+            args = _netsh_args(
+                "interface", context, "add", "dns", f"{addr_arg}={adapter}",
+                secondary, "index=2", "validate=no",
+            )
+            r = _run(args, timeout=_DEFAULT_TIMEOUT)
             if r.returncode != 0:
-                errors.append(f"Failed to set IPv4 secondary: {(r.stderr or r.stdout).strip()}")
+                errors.append(
+                    f"Failed to set {family} secondary DNS: {(r.stderr or r.stdout).strip()}"
+                )
         except subprocess.TimeoutExpired:
-            errors.append("Timed out setting IPv4 secondary DNS")
+            errors.append(f"Timed out setting {family} secondary DNS")
         except subprocess.SubprocessError as exc:
-            errors.append(f"Failed to set IPv4 secondary: {exc}")
-
-    # Set IPv6 primary (best-effort: not all networks have IPv6)
-    if not errors:
-        try:
-            r = _run(_netsh_args("interface", "ipv6", "set", "dns",
-                                 f"interface={adapter}", "static", primary),
-                     timeout=_DEFAULT_TIMEOUT)
-            # Some Windows builds return a non-zero rc when IPv6 is not
-            # enabled on the adapter — that's expected, not a fatal error.
-            if r.returncode != 0 and "not found" not in (r.stderr or "").lower():
-                log.debug("set ipv6 primary rc=%d stderr=%s", r.returncode, r.stderr)
-        except subprocess.TimeoutExpired:
-            log.warning("Timed out setting IPv6 primary DNS")
-        except subprocess.SubprocessError as exc:
-            log.warning("Failed to set IPv6 primary: %s", exc)
+            errors.append(f"Failed to set {family} secondary DNS: {exc}")
 
     return errors
 
 
+def _set_adapter_dns_static(adapter: str, primary: str, secondary: str) -> list[str]:
+    """Apply a static DNS configuration (family inferred from ``primary``)."""
+    family = _family_of(primary)
+    return _set_adapter_dns_static_family(adapter, family, primary, secondary)
+
+
 def _set_adapter_dns_dhcp(adapter: str) -> list[str]:
-    """Reset ``adapter`` to obtain DNS automatically (DHCP)."""
+    """Reset ``adapter`` to obtain DNS automatically (DHCP) for both families."""
     log = get_logger()
     errors: list[str] = []
-    # First, clear any statically configured servers
-    try:
-        _run(_netsh_args("interface", "ip", "delete", "dns",
-                         f"name={adapter}", "all"),
-             timeout=_DEFAULT_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        errors.append("Timed out clearing IPv4 DNS")
-    except subprocess.SubprocessError as exc:
-        errors.append(f"Failed to clear IPv4 DNS: {exc}")
 
-    try:
-        _run(_netsh_args("interface", "ipv6", "delete", "dns",
-                         f"interface={adapter}", "all"),
-             timeout=_DEFAULT_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        log.warning("Timed out clearing IPv6 DNS")
-    except subprocess.SubprocessError as exc:
-        log.warning("Failed to clear IPv6 DNS: %s", exc)
-
-    # Switch to DHCP
-    try:
-        r = _run(_netsh_args("interface", "ip", "set", "dns",
-                             f"name={adapter}", "dhcp"),
+    for family in ("ipv4", "ipv6"):
+        context = "ip" if family == "ipv4" else "ipv6"
+        addr_arg = "name" if family == "ipv4" else "interface"
+        try:
+            _run(_netsh_args("interface", context, "delete", "dns",
+                             f"{addr_arg}={adapter}", "all"),
                  timeout=_DEFAULT_TIMEOUT)
-        if r.returncode != 0:
-            errors.append(f"Failed to set DHCP: {(r.stderr or r.stdout).strip()}")
-    except subprocess.TimeoutExpired:
-        errors.append("Timed out setting DHCP DNS")
-    except subprocess.SubprocessError as exc:
-        errors.append(f"Failed to set DHCP: {exc}")
+        except subprocess.TimeoutExpired:
+            errors.append(f"Timed out clearing {family} DNS")
+        except subprocess.SubprocessError as exc:
+            errors.append(f"Failed to clear {family} DNS: {exc}")
 
-    # IPv6 DHCP (best-effort)
-    try:
-        r = _run(_netsh_args("interface", "ipv6", "set", "dns",
-                             f"interface={adapter}", "dhcp"),
-                 timeout=_DEFAULT_TIMEOUT)
-        if r.returncode != 0:
-            log.debug("ipv6 dhcp rc=%d stderr=%s", r.returncode, r.stderr)
-    except subprocess.TimeoutExpired:
-        log.warning("Timed out setting IPv6 DHCP DNS")
-    except subprocess.SubprocessError as exc:
-        log.warning("Failed to set IPv6 DHCP: %s", exc)
+        try:
+            r = _run(_netsh_args("interface", context, "set", "dns",
+                                 f"{addr_arg}={adapter}", "dhcp"),
+                     timeout=_DEFAULT_TIMEOUT)
+            if r.returncode != 0:
+                # IPv6 is best-effort on adapters without IPv6.  IPv4 DHCP is
+                # required for the "Auto (DHCP)" action to be considered done.
+                if family == "ipv4":
+                    errors.append(f"Failed to set {family} DHCP: {(r.stderr or r.stdout).strip()}")
+                else:
+                    log.debug("%s dhcp rc=%d stderr=%s", family, r.returncode, r.stderr)
+        except subprocess.TimeoutExpired:
+            if family == "ipv4":
+                errors.append(f"Timed out setting {family} DHCP DNS")
+            else:
+                log.warning("Timed out setting IPv6 DHCP DNS")
+        except subprocess.SubprocessError as exc:
+            if family == "ipv4":
+                errors.append(f"Failed to set {family} DHCP: {exc}")
+            else:
+                log.warning("Failed to set IPv6 DHCP: %s", exc)
 
     return errors
 
@@ -527,6 +668,30 @@ def _verify(adapter: str, expected: list[str]) -> tuple[bool, AdapterDnsState, s
     return True, state, "verified"
 
 
+def _restore_backup_state(backup: AdapterDnsState | None) -> DnsResult:
+    """Restore ``backup`` without acquiring the DNS lock (called internally)."""
+    if not backup or not backup.name:
+        return DnsResult(False, "No backup to restore", errors=["no backup"])
+
+    if backup.is_dhcp or not (backup.ipv4 or backup.ipv6):
+        errs = _set_adapter_dns_dhcp(backup.name)
+    else:
+        errs: list[str] = []
+        if backup.ipv4:
+            errs += _set_adapter_dns_static_family(
+                backup.name, "ipv4", backup.ipv4[0],
+                backup.ipv4[1] if len(backup.ipv4) > 1 else "",
+            )
+        if backup.ipv6:
+            errs += _set_adapter_dns_static_family(
+                backup.name, "ipv6", backup.ipv6[0],
+                backup.ipv6[1] if len(backup.ipv6) > 1 else "",
+            )
+    if errs:
+        return DnsResult(False, "; ".join(errs), backup=backup, errors=errs)
+    return DnsResult(True, "Previous DNS configuration restored", backup=backup)
+
+
 # ------------------------------------------------------------------ public API
 
 def apply_static(adapter: str, primary: str, secondary: str) -> DnsResult:
@@ -534,7 +699,7 @@ def apply_static(adapter: str, primary: str, secondary: str) -> DnsResult:
 
     * Validates inputs (rejects invalid IPs early).
     * Backs up the current configuration.
-    * Applies the change.
+    * Applies the change for the correct IP family only.
     * Verifies the result by re-reading the adapter state.
     * Returns a :class:`DnsResult` describing what happened.
     """
@@ -551,52 +716,90 @@ def apply_static(adapter: str, primary: str, secondary: str) -> DnsResult:
     if not p:
         return DnsResult(False, "Primary DNS is required", errors=["no primary"])
 
-    backup = read_dns(adapter)
-    log.info("backup: ipv4=%s ipv6=%s dhcp=%s", backup.ipv4, backup.ipv6, backup.is_dhcp)
+    if not _DNS_LOCK.acquire(blocking=False):
+        return DnsResult(
+            False, "Another DNS operation is already running",
+            errors=["DNS operation already running"],
+        )
 
-    apply_errs = _set_adapter_dns_static(adapter, p, s)
-    if apply_errs:
-        # Try to restore the backup so the user is not left in a bad state
-        log.error("apply_static: %s — restoring backup", apply_errs)
-        if backup.is_dhcp or not (backup.ipv4 or backup.ipv6):
-            _set_adapter_dns_dhcp(adapter)
-        elif backup.ipv4:
-            _set_adapter_dns_static(adapter, backup.ipv4[0],
-                                    backup.ipv4[1] if len(backup.ipv4) > 1 else "")
-        return DnsResult(False, "; ".join(apply_errs), backup=backup, errors=apply_errs)
+    try:
+        backup = read_dns(adapter)
+        log.info("backup: ipv4=%s ipv6=%s dhcp=%s", backup.ipv4, backup.ipv6, backup.is_dhcp)
 
-    ok, verified, msg = _verify(adapter, [p] + ([s] if s else []))
-    if not ok:
-        return DnsResult(False, msg, backup=backup, verified=verified, errors=[msg])
+        apply_errs = _set_adapter_dns_static(adapter, p, s)
+        if apply_errs:
+            log.error("apply_static: %s — restoring backup", apply_errs)
+            restore_result = _restore_backup_state(backup)
+            if not restore_result.success:
+                log.error("restore after apply failure also failed: %s", restore_result.message)
+            return DnsResult(
+                False, "; ".join(apply_errs), backup=backup, errors=apply_errs,
+            )
 
-    return DnsResult(True, "DNS applied and verified", backup=backup, verified=verified)
+        ok, verified, msg = _verify(adapter, [p] + ([s] if s else []))
+        if not ok:
+            log.error("apply_static: verification failed — restoring backup")
+            _restore_backup_state(backup)
+            return DnsResult(False, msg, backup=backup, verified=verified, errors=[msg])
+
+        return DnsResult(True, "DNS applied and verified", backup=backup, verified=verified)
+    finally:
+        _DNS_LOCK.release()
 
 
 def apply_dhcp(adapter: str) -> DnsResult:
-    """Reset ``adapter`` to obtain DNS automatically (DHCP)."""
+    """Reset ``adapter`` to obtain DNS automatically (DHCP).
+
+    The operation is verified by re-reading the adapter state and only reports
+    success when the adapter is actually back in DHCP mode.
+    """
     log = get_logger()
     log.info("apply_dhcp: adapter=%r", adapter)
     if not adapter or not adapter.strip():
         return DnsResult(False, "No network adapter selected", errors=["adapter empty"])
 
-    backup = read_dns(adapter)
-    errs = _set_adapter_dns_dhcp(adapter)
-    if errs:
-        return DnsResult(False, "; ".join(errs), backup=backup, errors=errs)
-    return DnsResult(True, "Adapter set to automatic DNS (DHCP)", backup=backup)
+    if not _DNS_LOCK.acquire(blocking=False):
+        return DnsResult(
+            False, "Another DNS operation is already running",
+            errors=["DNS operation already running"],
+        )
+
+    try:
+        backup = read_dns(adapter)
+        errs = _set_adapter_dns_dhcp(adapter)
+        if errs:
+            log.error("apply_dhcp: %s — restoring backup", errs)
+            _restore_backup_state(backup)
+            return DnsResult(False, "; ".join(errs), backup=backup, errors=errs)
+
+        # Verify: the adapter must now be reported as DHCP-managed.
+        time.sleep(0.3)
+        state = read_dns(adapter)
+        if state.is_dhcp:
+            return DnsResult(True, "Adapter set to automatic DNS (DHCP)", backup=backup)
+        msg = f"Verification failed: adapter {adapter!r} did not return to DHCP mode"
+        log.error(msg)
+        _restore_backup_state(backup)
+        return DnsResult(False, msg, backup=backup, errors=[msg])
+    finally:
+        _DNS_LOCK.release()
 
 
 def restore_backup(backup: AdapterDnsState) -> DnsResult:
     """Restore a previously captured :class:`AdapterDnsState`."""
     if not backup or not backup.name:
         return DnsResult(False, "No backup to restore", errors=["no backup"])
-    if backup.is_dhcp or not (backup.ipv4 or backup.ipv6):
-        return apply_dhcp(backup.name)
-    primary = backup.ipv4[0] if backup.ipv4 else ""
-    secondary = backup.ipv4[1] if len(backup.ipv4) > 1 else ""
-    if not primary:
-        return apply_dhcp(backup.name)
-    return apply_static(backup.name, primary, secondary)
+
+    if not _DNS_LOCK.acquire(blocking=False):
+        return DnsResult(
+            False, "Another DNS operation is already running",
+            errors=["DNS operation already running"],
+        )
+
+    try:
+        return _restore_backup_state(backup)
+    finally:
+        _DNS_LOCK.release()
 
 
 # ------------------------------------------------------------------ ping (DNS test)

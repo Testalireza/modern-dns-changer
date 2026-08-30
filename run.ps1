@@ -12,9 +12,13 @@ if ($isAdmin) {
     python main.py
     Read-Host "Press Enter to exit..."
 } else {
-    # Relaunch as admin
+    # Relaunch as admin.  Passing the command as an array of separate
+    # arguments (rather than one giant quoted string) keeps paths containing
+    # spaces and non-ASCII characters intact.
     try {
-        $proc = Start-Process powershell -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"cd '$scriptDir'; python main.py; Read-Host 'Press Enter to exit...'`"" -Verb RunAs -PassThru -ErrorAction Stop
+        $cmd = "cd '$scriptDir'; python main.py; Read-Host 'Press Enter to exit...'"
+        $argList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $cmd)
+        $proc = Start-Process powershell -ArgumentList $argList -Verb RunAs -PassThru -ErrorAction Stop
     } catch {
         Write-Host "Failed to relaunch as Administrator: $_" -ForegroundColor Red
         Read-Host "Press Enter to exit..."

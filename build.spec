@@ -56,8 +56,8 @@ hiddenimports += ["PIL._tkinter_finder"]
 
 # Our own modules
 for mod in (
-    "app_paths", "logger", "platform_utils", "validators",
-    "storage", "dns_manager", "tray", "widgets", "ui",
+    "app_paths", "logger", "platform_utils", "validators", "hotkeys",
+    "presets", "storage", "dns_manager", "tray", "widgets", "ui",
     "translations",
 ):
     hiddenimports.append(mod)
@@ -71,6 +71,13 @@ if not os.path.exists(icon_path):
         subprocess.check_call([sys.executable, "generate_icon.py"], cwd=PROJECT_DIR)
     except Exception:
         pass
+
+# Bundle the icons so ``app_paths.resource_path("icon.ico")`` resolves even
+# inside the onefile ``sys._MEIPASS`` directory.
+for icon_name in ("icon.ico", "icon.png"):
+    _icon_fn = os.path.join(PROJECT_DIR, icon_name)
+    if os.path.exists(_icon_fn):
+        datas.append((_icon_fn, "."))
 
 a = Analysis(
     ["main.py"],

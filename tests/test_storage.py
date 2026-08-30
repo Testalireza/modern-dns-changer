@@ -8,11 +8,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from presets import DEFAULT_PRESET_NAMES
 from storage import (
     DEFAULT_SETTINGS,
     load_json,
     load_presets,
     load_settings,
+    load_user_presets,
+    sanitize_presets,
+    sanitize_settings,
     save_json,
     save_presets,
 )
@@ -87,13 +91,78 @@ def test_presets_roundtrip() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "presets.json"
         data = {
-            "Google": {"primary": "8.8.8.8", "secondary": "8.8.4.4"},
-            "Cloudflare": {"primary": "1.1.1.1", "secondary": "1.0.0.1"},
+            "My DNS": {"primary": "8.8.8.8", "secondary": "8.8.4.4"},
+            "Backup DNS": {"primary": "1.1.1.1", "secondary": "1.0.0.1"},
         }
         save_presets(p, data)
-        loaded = load_presets(p)
-        assert loaded == data
+        user_loaded = load_user_presets(p)
+        assert user_loaded == data
+        # The display list also contains the built-in defaults, without
+        # overwriting the user's data.
+        merged = load_presets(p)
+        for name in DEFAULT_PRESET_NAMES:
+            assert name in merged
+        for k, v in data.items():
+            assert merged[k] == v
         print("test_presets_roundtrip OK")
+
+
+def test_sanitize_settings_coerces_values() -> None:
+    raw = {
+        "theme": "purple",
+        "language": "zz",
+        "hotkey": "   ",
+        "minimize_to_tray": "false",
+        "preset_a": 123,
+        "schema_version": "abc",
+    }
+    out = sanitize_settings(raw)
+    assert out["theme"] == "dark"
+    assert out["language"] == "en"
+    assert out["hotkey"] == "F9"
+    assert out["minimize_to_tray"] is False
+    assert out["preset_a"] == ""
+    assert out["schema_version"] == 1
+    print("test_sanitize_settings_coerces_values OK")
+
+
+def test_sanitize_settings_non_dict_defaults() -> None:
+    out = sanitize_settings(["not", "a", "dict"])
+    assert out["theme"] == "dark"
+    assert out["minimize_to_tray"] is True
+    print("test_sanitize_settings_non_dict_defaults OK")
+
+
+def test_sanitize_presets_drops_invalid_entries() -> None:
+    raw = {
+        "Good": {"primary": "8.8.8.8", "secondary": "8.8.4.4"},
+        "Bad dns": {"primary": "not-an-ip", "secondary": ""},
+        "Bad type": "8.8.8.8",
+        "Mixed families": {"primary": "8.8.8.8", "secondary": "::1"},
+        "Duplicate": {"primary": "1.1.1.1", "secondary": "1.1.1.1"},
+    }
+    out = sanitize_presets(raw)
+    assert "Good" in out
+    assert out["Good"]["secondary"] == "8.8.4.4"
+    assert "Bad dns" not in out
+    assert "Bad type" not in out
+    assert "Mixed families" not in out
+    assert "Duplicate" in out
+    assert out["Duplicate"]["secondary"] == ""
+    print("test_sanitize_presets_drops_invalid_entries OK")
+
+
+def test_load_presets_sanitizes_corrupt_file() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "presets.json"
+        p.write_text(json.dumps({"Good": {"primary": "8.8.8.8"}, "X": "bad"}),
+                     encoding="utf-8")
+        user_loaded = load_user_presets(p)
+        assert user_loaded == {"Good": {"primary": "8.8.8.8", "secondary": ""}}
+        loaded = load_presets(p)
+        assert loaded["Good"] == {"primary": "8.8.8.8", "secondary": ""}
+        assert "X" not in loaded
+        print("test_load_presets_sanitizes_corrupt_file OK")
 
 
 if __name__ == "__main__":
@@ -104,4 +173,8 @@ if __name__ == "__main__":
     test_save_json_atomic_no_partial_file_on_dirty_close()
     test_settings_migrates_missing_keys()
     test_presets_roundtrip()
+    test_sanitize_settings_coerces_values()
+    test_sanitize_settings_non_dict_defaults()
+    test_sanitize_presets_drops_invalid_entries()
+    test_load_presets_sanitizes_corrupt_file()
     print("\nAll storage tests passed.")

@@ -66,10 +66,34 @@ def normalize_ip(text: str) -> str:
     raise ValueError(f"not a valid IP address: {text!r}")
 
 
+def _is_usable_dns_address(text: str) -> bool:
+    """Return True if ``text`` is a unicast, non-unspecified IP address.
+
+    A DNS server must be a concrete unicast address.  We reject multicast
+    ranges, ``0.0.0.0`` / ``::`` and the IPv4 broadcast address.  Loopback
+    (``127.0.0.1`` / ``::1``) is intentionally allowed because a local resolver
+    is a legitimate DNS server.
+    """
+    if not is_valid_ip(text):
+        return False
+    try:
+        obj = ipaddress.ip_address(text.strip())
+    except (ipaddress.AddressValueError, ValueError):
+        return False
+    if obj.is_multicast or obj.is_unspecified:
+        return False
+    if isinstance(obj, ipaddress.IPv4Address) and int(obj) == int(
+        ipaddress.IPv4Address("255.255.255.255")
+    ):
+        return False
+    return True
+
+
 def is_valid_dns(value: str) -> bool:
     """Return True if ``value`` is an acceptable DNS server string.
 
-    The string is whitespace-trimmed; an empty string is rejected.
+    The string is whitespace-trimmed; an empty string is rejected.  Only
+    unicast IPv4/IPv6 addresses are accepted.
     """
     if value is None:
         return False
@@ -77,9 +101,9 @@ def is_valid_dns(value: str) -> bool:
     if not s:
         return False
     if _IPV4_LIKE.match(s):
-        return is_valid_ipv4(s)
+        return is_valid_ipv4(s) and _is_usable_dns_address(s)
     # Generic check (handles IPv6 too)
-    return is_valid_ip(s)
+    return is_valid_ip(s) and _is_usable_dns_address(s)
 
 
 def normalize_dns(value: str) -> str:

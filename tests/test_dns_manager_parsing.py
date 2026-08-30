@@ -82,6 +82,41 @@ def test_parse_dns_servers_inline() -> None:
     print("test_parse_dns_servers_inline OK")
 
 
+def test_parse_dns_block_ipv6_letter_hextet() -> None:
+    # IPv6 addresses whose first hextet starts with a letter used to be
+    # mis-parsed as a "label: value" line.
+    text = (
+        "Statically Configured DNS Servers:    fe80::1\n"
+        "                                       fd00::2\n"
+        "Register with which suffix:            Primary only\n"
+    )
+    servers, is_dhcp = _parse_dns_block(text)
+    assert servers == ["fe80::1", "fd00::2"]
+    assert is_dhcp is False
+    print("test_parse_dns_block_ipv6_letter_hextet OK")
+
+
+def test_parse_dns_servers_ipv6_letter_hextet() -> None:
+    text = (
+        "Configured DNS Servers:                2606:4700:4700::1111\n"
+        "                                       fd00::2\n"
+        "Register with which suffix:            Primary only\n"
+    )
+    servers = _parse_dns_servers(text)
+    assert "2606:4700:4700::1111" in servers
+    assert "fd00::2" in servers
+    print("test_parse_dns_servers_ipv6_letter_hextet OK")
+
+
+def test_parse_dns_servers_inline_first_hextet_not_lost() -> None:
+    # The old code split a full IPv6 address on the first ':' and lost the
+    # first hextet.
+    text = "DNS servers configured for this interface:  2001:4860:4860::8888"
+    servers = _parse_dns_servers(text)
+    assert "2001:4860:4860::8888" in servers
+    print("test_parse_dns_servers_inline_first_hextet_not_lost OK")
+
+
 def test_validate_preset_happy() -> None:
     name, p, s, errs = validate_preset("Google", "8.8.8.8", "8.8.4.4")
     assert name == "Google"
@@ -130,6 +165,9 @@ if __name__ == "__main__":
     test_parse_dns_block_inline()
     test_parse_dns_block_dhcp()
     test_parse_dns_servers_ipv6()
+    test_parse_dns_block_ipv6_letter_hextet()
+    test_parse_dns_servers_ipv6_letter_hextet()
+    test_parse_dns_servers_inline_first_hextet_not_lost()
     test_validate_preset_happy()
     test_validate_preset_ipv6()
     test_validate_preset_missing_primary()

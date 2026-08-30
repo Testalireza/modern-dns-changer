@@ -13,11 +13,13 @@ from pathlib import Path
 TESTS = [
     "tests.test_app_paths",
     "tests.test_validators",
+    "tests.test_presets",
     "tests.test_storage",
     "tests.test_translations",
     "tests.test_dns_manager_parsing",
     "tests.test_dns_apply",
     "tests.test_hotkey",
+    "tests.test_tray_lifecycle",
 ]
 
 

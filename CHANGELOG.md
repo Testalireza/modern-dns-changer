@@ -1,5 +1,51 @@
 # Changelog — v4.1
 
+## Post-4.1 features
+
+* Added nine built-in read-only DNS presets (Anti EA Sanction, Cloudflare,
+  Google, OpenDNS, Quad9, Level3 DNS, DNSPod, Begzar, Jetping) as a single
+  authoritative source in `presets.py`.
+* Added a configurable **Close Behavior** setting in Settings:
+  - `Minimize to Tray` (default, preserves historical behaviour)
+  - `Exit Application` (window Close fully exits, cleaning up tray/hotkeys)
+  - Tray → Quit always fully exits regardless of the setting.
+* `presets.json` now stores only user presets; built-ins are merged at display
+  time, so existing user presets are always preserved and duplicates are
+  avoided (a user preset with a built-in name overrides that built-in).
+* Backwards-compatible migration from the legacy `minimize_to_tray` key.
+
+## Post-4.1 hardening
+
+Additional reliability/security fixes made after the v4.1 audit and review:
+
+* DNS presets now apply to a **single** IP family.  A mixed IPv4/IPv6 pair is
+  rejected instead of being passed to the wrong `netsh` stack.
+* DNS operations are serialized with a lock; a second simultaneous change is
+  rejected instead of racing two `netsh` processes.
+* IPv6 DNS parsing now handles addresses whose first hextet starts with a
+  letter (e.g. `fe80::1`) and no longer drops the first hextet of an inline
+  IPv6 address.
+* `read_dns` uses PowerShell `Get-DnsClientServerAddress` as a
+  locale-independent fallback for verification on non-English Windows.
+* `apply_dhcp` now verifies that the adapter actually returned to DHCP mode
+  before reporting success, and restores the previous state on failure.
+* `restore_backup` restores both IPv4 and IPv6 static DNS when applicable.
+* `platform_utils.request_admin_elevation` now relaunches `main.py` (not
+  `platform_utils.py`) when running from source, and adds `--elevated` to
+  prevent infinite UAC loops.
+* The UI captures Tk variables on the main thread before launching a worker
+  thread (previously a worker could read `Tk.StringVar` from a non-Tk thread).
+* Settings and presets are sanitised on load/save (invalid themes, languages,
+  booleans stored as strings, malformed preset entries, mixed families).
+* Hotkey parsing was extracted to `hotkeys.py` so the UI, the settings form and
+  the tests use the same implementation.
+* More user-visible strings are localised and a "DNS operation in progress"
+  message is shown instead of silently allowing a second operation.
+* The repository-ZIP download now writes to a `.part` file and atomically
+  replaces the destination.
+* Added GitHub Actions CI (tests on Ubuntu/Windows + PyInstaller Windows build).
+* README/CHANGELOG updated to reflect the actual Windows/IP-family behaviour.
+
 ## Summary
 
 This is a complete audit and rewrite of the Modern DNS Changer project
